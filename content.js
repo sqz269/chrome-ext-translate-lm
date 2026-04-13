@@ -85,8 +85,79 @@ function flash(el) {
   }, 600);
 }
 
+// ─── Image grabbing ──────────────────────────────────────────────────────────
+// Pull pixels from the already-decoded <img> instead of refetching. Avoids
+// Referer checks, auth gates, anti-bot, and a redundant network round-trip.
+
+function findImage(srcUrl) {
+  return [...document.images].find(
+    (i) => i.src === srcUrl || i.currentSrc === srcUrl
+  );
+}
+
+function tryCanvas(img) {
+  // Image must be fully loaded with real dimensions.
+  if (!img.complete || !img.naturalWidth || !img.naturalHeight) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  canvas.getContext("2d").drawImage(img, 0, 0);
+
+  try {
+    // JPEG @ 0.92 — near-lossless, far smaller than PNG for photos.
+    // Vision models don't need alpha for OCR.
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } catch {
+    // SecurityError: cross-origin image without CORS headers tainted the canvas.
+    return null;
+  }
+}
+
+async function tryPageFetch(url) {
+  // Runs with the page's origin → Referer + cookies are automatic.
+  // CORS still applies; non-cooperating CDNs will reject this.
+  try {
+    const res = await fetch(url, { credentials: "include", mode: "cors" });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise((resolve) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => resolve(null);
+      fr.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function grabImageFromPage(srcUrl) {
+  const img = findImage(srcUrl);
+
+  if (img) {
+    const viaCanvas = tryCanvas(img);
+    if (viaCanvas) return { ok: true, dataUrl: viaCanvas, method: "canvas" };
+  }
+
+  const viaFetch = await tryPageFetch(srcUrl);
+  if (viaFetch) return { ok: true, dataUrl: viaFetch, method: "page-fetch" };
+
+  return {
+    ok: false,
+    error: img
+      ? "Canvas tainted (cross-origin) and page fetch CORS-blocked."
+      : "Image element not found in this frame."
+  };
+}
+
 // ─── Message handler ─────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.cmd === "lmt:grabImage") {
+    grabImageFromPage(msg.srcUrl).then(sendResponse);
+    return true; // keep the message channel open for the async response
+  }
+
   if (msg?.cmd !== "lmt:extractElement") return;
 
   const container = resolveContainer(lastTarget);

@@ -74,6 +74,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     injectOverlay(tab.id, { progress: p }).catch(() => {});
   };
 
+  // Tab/frame context for content-script-mediated operations (image grab).
+  const ctx = { tabId: tab.id, frameId: info.frameId ?? 0 };
+
   try {
     let result;
     if (info.menuItemId === "lm-translate-text" && info.selectionText) {
@@ -99,9 +102,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       if (!resp?.ok) throw new Error(resp?.error || "Could not read element.");
       result = await translateText(resp.text, { onProgress });
     } else if (info.menuItemId === "lm-translate-image" && info.srcUrl) {
-      result = await translateImage(info.srcUrl, { onProgress });
+      result = await translateImage(info.srcUrl, { onProgress, ctx });
     } else if (info.menuItemId === "lm-translate-image-overlay" && info.srcUrl) {
-      const regions = await detectAndTranslate(info.srcUrl, { onProgress });
+      const regions = await detectAndTranslate(info.srcUrl, { onProgress, ctx });
       await injectBoxOverlay(tab.id, info.srcUrl, regions);
       await injectOverlay(tab.id, { text: `${regions.length} region(s) — hover to read.` });
       return;
@@ -270,10 +273,7 @@ async function translateImage(srcUrl, opts = {}) {
   const cfg = await getSettings();
   const sys = cfg.systemPrompt.replace("{LANG}", cfg.targetLang);
 
-  // Fetch image → base64 data URL.
-  // Fetching from the SW avoids page CSP and works for cross-origin images
-  // thanks to <all_urls> host permission.
-  const dataUrl = await fetchImageAsDataUrl(srcUrl);
+  const dataUrl = await grabImage(srcUrl, opts.ctx);
 
   return callLM([
     { role: "system", content: sys },
@@ -296,7 +296,7 @@ async function translateImage(srcUrl, opts = {}) {
 // ─── Grounded image translation (Gemma-style box_2d) ─────────────────────────
 async function detectAndTranslate(srcUrl, opts = {}) {
   const cfg = await getSettings();
-  const dataUrl = await fetchImageAsDataUrl(srcUrl);
+  const dataUrl = await grabImage(srcUrl, opts.ctx);
 
   // 1. Detection pass — vision call, returns JSON with boxes.
   const rawDetect = await callLM(
@@ -396,8 +396,38 @@ async function injectBoxOverlay(tabId, srcUrl, regions) {
   });
 }
 
-async function fetchImageAsDataUrl(url) {
-  const res = await fetch(url);
+// ─── Image acquisition chain ─────────────────────────────────────────────────
+// 1. Canvas in content script — no network, immune to Referer/auth/anti-bot.
+//    Fails on cross-origin images without CORS headers (tainted canvas).
+// 2. fetch() in content script — page origin → Referer + cookies automatic.
+//    Fails on CORS-blocking CDNs.
+// 3. SW fetch — host permissions bypass CORS, but no Referer. credentials:
+//    'include' covers auth-gated content; pure Referer-checkers still fail.
+async function grabImage(srcUrl, ctx) {
+  if (ctx?.tabId != null) {
+    try {
+      const resp = await chrome.tabs.sendMessage(
+        ctx.tabId,
+        { cmd: "lmt:grabImage", srcUrl },
+        { frameId: ctx.frameId ?? 0 }
+      );
+      if (resp?.ok && resp.dataUrl) {
+        console.debug(`[LM Translate] image via ${resp.method}`);
+        return resp.dataUrl;
+      }
+      console.debug(`[LM Translate] page grab failed: ${resp?.error}`);
+    } catch (e) {
+      // Content script not present (restricted page) — fall through.
+      console.debug("[LM Translate] no content script, using SW fetch");
+    }
+  }
+
+  console.debug("[LM Translate] image via SW fetch");
+  return swFetchImage(srcUrl);
+}
+
+async function swFetchImage(url) {
+  const res = await fetch(url, { credentials: "include" });
   if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
   const blob = await res.blob();
 
