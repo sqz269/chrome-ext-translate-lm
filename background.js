@@ -21,11 +21,30 @@ async function getSettings() {
 }
 
 // ─── Context menus ────────────────────────────────────────────────────────────
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
+  // Retro-inject content.js into already-open tabs. Manifest content_scripts
+  // only fire on navigation, so without this the extension is dead on every
+  // tab that was open before install/reload.
+  for (const tab of await chrome.tabs.query({})) {
+    chrome.scripting
+      .executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        files: ["content.js"]
+      })
+      .catch(() => {
+        /* chrome://, web store, file:// without perms, etc. — fine to skip */
+      });
+  }
+
   chrome.contextMenus.create({
     id: "lm-translate-text",
     title: "Translate selection with local LM",
     contexts: ["selection"]
+  });
+  chrome.contextMenus.create({
+    id: "lm-translate-element",
+    title: "Translate this element",
+    contexts: ["page", "link", "editable", "frame"]
   });
   chrome.contextMenus.create({
     id: "lm-translate-image",
@@ -49,6 +68,26 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     let result;
     if (info.menuItemId === "lm-translate-text" && info.selectionText) {
       result = await translateText(info.selectionText);
+    } else if (info.menuItemId === "lm-translate-element") {
+      // Ask the content script what was under the cursor at right-click time.
+      // frameId matters for iframes (e.g. embedded tweets).
+      let resp;
+      try {
+        resp = await chrome.tabs.sendMessage(
+          tab.id,
+          { cmd: "lmt:extractElement" },
+          { frameId: info.frameId ?? 0 }
+        );
+      } catch (e) {
+        // "Receiving end does not exist" — content script never loaded in this
+        // frame (restricted page, or a race we couldn't retro-inject around).
+        throw new Error(
+          "Content script not loaded here. Try refreshing the page, " +
+            "or this may be a restricted page (chrome://, PDF viewer, etc.)."
+        );
+      }
+      if (!resp?.ok) throw new Error(resp?.error || "Could not read element.");
+      result = await translateText(resp.text);
     } else if (info.menuItemId === "lm-translate-image" && info.srcUrl) {
       result = await translateImage(info.srcUrl);
     } else if (info.menuItemId === "lm-translate-image-overlay" && info.srcUrl) {
