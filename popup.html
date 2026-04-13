@@ -36,6 +36,8 @@
       font: inherit;
     }
     textarea { resize: vertical; min-height: 60px; }
+    .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: #ccc; }
+    .check input { width: auto; margin: 0; }
     button {
       margin-top: 14px;
       width: 100%;
@@ -68,6 +70,11 @@
 
   <label for="detectPrompt">Detection prompt (box overlay)</label>
   <textarea id="detectPrompt"></textarea>
+
+  <label class="check">
+    <input type="checkbox" id="imageInTranslatePass">
+    Include image in translation pass (visual context, more tokens)
+  </label>
 
   <button id="save">Save</button>
   <div id="status"></div>

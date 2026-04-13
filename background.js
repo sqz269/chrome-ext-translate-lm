@@ -12,7 +12,11 @@ const DEFAULTS = {
   detectPrompt:
     "Identify all text blobs in this image. Return a JSON array where each " +
     "element is {\"box_2d\": [ymin, xmin, ymax, xmax], \"label\": \"<the text>\"}. " +
-    "Coordinates are normalized to 0-1000. Return ONLY the JSON array."
+    "Coordinates are normalized to 0-1000. Return ONLY the JSON array.",
+  // If true, the batch-translate pass also receives the image so the model
+  // can use visual context (e.g. "売" on a button vs a sign). Costs more
+  // prompt tokens; quality gain depends on the model.
+  imageInTranslatePass: false
 };
 
 async function getSettings() {
@@ -64,10 +68,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   // Show "loading" overlay immediately
   await injectOverlay(tab.id, { loading: true });
 
+  // Push live progress to the overlay (throttled inside callLM at 150ms).
+  // Fire-and-forget so we don't block the SSE reader on script injection.
+  const onProgress = (p) => {
+    injectOverlay(tab.id, { progress: p }).catch(() => {});
+  };
+
   try {
     let result;
     if (info.menuItemId === "lm-translate-text" && info.selectionText) {
-      result = await translateText(info.selectionText);
+      result = await translateText(info.selectionText, { onProgress });
     } else if (info.menuItemId === "lm-translate-element") {
       // Ask the content script what was under the cursor at right-click time.
       // frameId matters for iframes (e.g. embedded tweets).
@@ -87,11 +97,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         );
       }
       if (!resp?.ok) throw new Error(resp?.error || "Could not read element.");
-      result = await translateText(resp.text);
+      result = await translateText(resp.text, { onProgress });
     } else if (info.menuItemId === "lm-translate-image" && info.srcUrl) {
-      result = await translateImage(info.srcUrl);
+      result = await translateImage(info.srcUrl, { onProgress });
     } else if (info.menuItemId === "lm-translate-image-overlay" && info.srcUrl) {
-      const regions = await detectAndTranslate(info.srcUrl);
+      const regions = await detectAndTranslate(info.srcUrl, { onProgress });
       await injectBoxOverlay(tab.id, info.srcUrl, regions);
       await injectOverlay(tab.id, { text: `${regions.length} region(s) — hover to read.` });
       return;
@@ -133,6 +143,22 @@ async function callLM(messages, opts = {}) {
     error: null
   };
 
+  // Live progress: tracked here, pushed by interval. We approximate token
+  // count by counting non-empty content deltas — accurate enough for a live
+  // indicator; the real count lands in `usage` at stream end.
+  const live = { tokens: 0, ttft: null };
+  let progressTimer = null;
+  if (opts.onProgress) {
+    progressTimer = setInterval(() => {
+      opts.onProgress({
+        elapsed: performance.now() - t0,
+        tokens: live.tokens,
+        ttft: live.ttft,
+        kind: stat.kind
+      });
+    }, 150);
+  }
+
   try {
     const res = await fetch(cfg.endpoint, {
       method: "POST",
@@ -145,7 +171,7 @@ async function callLM(messages, opts = {}) {
       throw new Error(`LM Studio HTTP ${res.status}: ${txt.slice(0, 200)}`);
     }
 
-    const { content, ttft, usage, model } = await readSSE(res.body, t0);
+    const { content, ttft, usage, model } = await readSSE(res.body, t0, live);
 
     stat.ttft = ttft;
     stat.total = performance.now() - t0;
@@ -161,12 +187,14 @@ async function callLM(messages, opts = {}) {
     stat.error = err.message || String(err);
     throw err;
   } finally {
+    if (progressTimer) clearInterval(progressTimer);
     recordStat(stat);
   }
 }
 
 // Parse an OpenAI-style SSE stream. Returns { content, ttft, usage, model }.
-async function readSSE(stream, t0) {
+// `live` is an optional out-param mutated as chunks arrive (for progress UI).
+async function readSSE(stream, t0, live) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -201,8 +229,12 @@ async function readSSE(stream, t0) {
 
       const delta = obj.choices?.[0]?.delta?.content;
       if (delta) {
-        if (ttft === null) ttft = performance.now() - t0;
+        if (ttft === null) {
+          ttft = performance.now() - t0;
+          if (live) live.ttft = ttft;
+        }
         content += delta;
+        if (live) live.tokens++;
       }
     }
   }
@@ -222,7 +254,7 @@ async function recordStat(stat) {
   }
 }
 
-async function translateText(text) {
+async function translateText(text, opts = {}) {
   const cfg = await getSettings();
   const sys = cfg.systemPrompt.replace("{LANG}", cfg.targetLang);
   return callLM(
@@ -230,11 +262,11 @@ async function translateText(text) {
       { role: "system", content: sys },
       { role: "user", content: text }
     ],
-    { kind: "text" }
+    { kind: "text", onProgress: opts.onProgress }
   );
 }
 
-async function translateImage(srcUrl) {
+async function translateImage(srcUrl, opts = {}) {
   const cfg = await getSettings();
   const sys = cfg.systemPrompt.replace("{LANG}", cfg.targetLang);
 
@@ -258,11 +290,11 @@ async function translateImage(srcUrl) {
         }
       ]
     }
-  ], { kind: "image" });
+  ], { kind: "image", onProgress: opts.onProgress });
 }
 
 // ─── Grounded image translation (Gemma-style box_2d) ─────────────────────────
-async function detectAndTranslate(srcUrl) {
+async function detectAndTranslate(srcUrl, opts = {}) {
   const cfg = await getSettings();
   const dataUrl = await fetchImageAsDataUrl(srcUrl);
 
@@ -277,7 +309,7 @@ async function detectAndTranslate(srcUrl) {
         ]
       }
     ],
-    { kind: "detect" }
+    { kind: "detect", onProgress: opts.onProgress }
   );
 
   const detected = extractJsonArray(rawDetect);
@@ -285,8 +317,9 @@ async function detectAndTranslate(srcUrl) {
 
   const labels = detected.map((d) => String(d.label ?? ""));
 
-  // 2. Translation pass — text-only, batched with a hard delimiter.
-  const translations = await translateBatch(labels, cfg);
+  // 2. Translation pass — batched with a hard delimiter. Optionally include
+  // the image again for visual context.
+  const translations = await translateBatch(labels, cfg, dataUrl, opts);
 
   return detected.map((d, i) => ({
     box: d.box_2d, // [ymin, xmin, ymax, xmax] in 0-1000
@@ -309,22 +342,37 @@ function extractJsonArray(text) {
 
 const SEG = "<<<SEG>>>";
 
-async function translateBatch(labels, cfg) {
+async function translateBatch(labels, cfg, dataUrl, opts = {}) {
   if (labels.length === 0) return [];
-  if (labels.length === 1) return [await translateText(labels[0])];
 
-  const sys =
+  const withImage = cfg.imageInTranslatePass && dataUrl;
+
+  let sys =
     `You are a translation engine. The user will send text segments separated ` +
     `by the exact marker "${SEG}". Translate each segment into ${cfg.targetLang}. ` +
     `Return ONLY the translations, separated by the same "${SEG}" marker, in the ` +
     `same order. Do not number, do not add commentary, do not merge segments.`;
 
+  if (withImage) {
+    sys +=
+      ` The source image is attached for visual context — use it to resolve ` +
+      `ambiguity, but still output only the translated segments.`;
+  }
+
+  const segText = labels.join(`\n${SEG}\n`);
+  const userContent = withImage
+    ? [
+        { type: "text", text: segText },
+        { type: "image_url", image_url: { url: dataUrl } }
+      ]
+    : segText;
+
   const raw = await callLM(
     [
       { role: "system", content: sys },
-      { role: "user", content: labels.join(`\n${SEG}\n`) }
+      { role: "user", content: userContent }
     ],
-    { kind: "batch" }
+    { kind: withImage ? "batch+img" : "batch", onProgress: opts.onProgress }
   );
 
   const parts = raw.split(SEG).map((s) => s.trim());
@@ -586,6 +634,33 @@ function showOverlay(payload) {
   if (payload.loading) {
     body.textContent = "Translating…";
     body.style.color = "#aaa";
+  } else if (payload.progress) {
+    const p = payload.progress;
+    const elapsed = (p.elapsed / 1000).toFixed(1);
+    body.style.color = "#aaa";
+    body.innerHTML = "";
+
+    const title = document.createElement("div");
+    title.textContent =
+      p.kind === "detect" ? "Detecting text…" : "Translating…";
+    title.style.cssText = "color:#e8e8e8;margin-bottom:6px";
+    body.appendChild(title);
+
+    const stats = document.createElement("div");
+    stats.style.cssText =
+      "font-family:ui-monospace,Consolas,monospace;font-size:11px";
+
+    if (p.ttft == null) {
+      // Still in prefill — no tokens yet.
+      stats.textContent = `${elapsed}s · waiting for first token…`;
+    } else {
+      const genMs = p.elapsed - p.ttft;
+      const tps = genMs > 0 ? (p.tokens / (genMs / 1000)).toFixed(1) : "—";
+      const ttftS = (p.ttft / 1000).toFixed(2);
+      stats.textContent =
+        `${elapsed}s · ${p.tokens} tok · ${tps} tok/s · TTFT ${ttftS}s`;
+    }
+    body.appendChild(stats);
   } else if (payload.error) {
     body.textContent = "Error: " + payload.error;
     body.style.color = "#ff6b6b";

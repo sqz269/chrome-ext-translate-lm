@@ -8,21 +8,27 @@ const DEFAULTS = {
   detectPrompt:
     "Identify all text blobs in this image. Return a JSON array where each " +
     "element is {\"box_2d\": [ymin, xmin, ymax, xmax], \"label\": \"<the text>\"}. " +
-    "Coordinates are normalized to 0-1000. Return ONLY the JSON array."
+    "Coordinates are normalized to 0-1000. Return ONLY the JSON array.",
+  imageInTranslatePass: false
 };
 
-const fields = ["endpoint", "model", "targetLang", "systemPrompt", "detectPrompt"];
+const textFields = ["endpoint", "model", "targetLang", "systemPrompt", "detectPrompt"];
+const boolFields = ["imageInTranslatePass"];
 
 async function load() {
   const cfg = await chrome.storage.sync.get(DEFAULTS);
-  for (const f of fields) {
+  for (const f of textFields) {
     document.getElementById(f).value = cfg[f] ?? DEFAULTS[f];
+  }
+  for (const f of boolFields) {
+    document.getElementById(f).checked = cfg[f] ?? DEFAULTS[f];
   }
 }
 
 document.getElementById("save").addEventListener("click", async () => {
   const out = {};
-  for (const f of fields) out[f] = document.getElementById(f).value;
+  for (const f of textFields) out[f] = document.getElementById(f).value;
+  for (const f of boolFields) out[f] = document.getElementById(f).checked;
   await chrome.storage.sync.set(out);
   const s = document.getElementById("status");
   s.textContent = "Saved.";
