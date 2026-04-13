@@ -2,21 +2,21 @@
 // Tracks the last right-clicked element so the background can ask for it
 // when a context menu item fires.
 
-// Guard against double-injection (manifest auto-inject + onInstalled retro-inject
-// can both fire on the same page). Content scripts from the same extension share
-// an isolated world, so this flag is visible across injections.
-if (!globalThis.__lmtContentLoaded) {
-globalThis.__lmtContentLoaded = true;
+// Hot-reload support: tear down any prior version of this script before
+// installing fresh listeners. Content scripts from the same extension share
+// an isolated world, so the teardown hook from a previous injection is visible
+// here. This handles both the manifest/retro-inject race AND extension reloads
+// during development (where the old boolean-guard pattern would block updates).
+globalThis.__lmtTeardown?.();
+{
 
 let lastTarget = null;
 
-document.addEventListener(
-  "contextmenu",
-  (e) => {
-    lastTarget = e.target;
-  },
-  true // capture phase — runs before page handlers can stopPropagation
-);
+const onContextMenu = (e) => {
+  lastTarget = e.target;
+};
+// Capture phase — runs before page handlers can stopPropagation.
+document.addEventListener("contextmenu", onContextMenu, true);
 
 // ─── Element resolution ──────────────────────────────────────────────────────
 // Common "post-like" containers across social sites. Editable via settings
@@ -152,7 +152,7 @@ async function grabImageFromPage(srcUrl) {
 }
 
 // ─── Message handler ─────────────────────────────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+const onMessage = (msg, _sender, sendResponse) => {
   if (msg?.cmd === "lmt:grabImage") {
     grabImageFromPage(msg.srcUrl).then(sendResponse);
     return true; // keep the message channel open for the async response
@@ -179,6 +179,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     tag: container.tagName.toLowerCase(),
     chars: text.length
   });
-});
+};
+chrome.runtime.onMessage.addListener(onMessage);
 
-} // end double-injection guard
+// Register teardown so the next injection can cleanly replace this one.
+globalThis.__lmtTeardown = () => {
+  document.removeEventListener("contextmenu", onContextMenu, true);
+  chrome.runtime.onMessage.removeListener(onMessage);
+};
+
+console.debug("[LM Translate] content script loaded");
+
+} // end block scope

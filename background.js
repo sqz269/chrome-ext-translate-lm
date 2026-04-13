@@ -16,7 +16,11 @@ const DEFAULTS = {
   // If true, the batch-translate pass also receives the image so the model
   // can use visual context (e.g. "売" on a button vs a sign). Costs more
   // prompt tokens; quality gain depends on the model.
-  imageInTranslatePass: false
+  imageInTranslatePass: false,
+  // Experiment: structure both detect and batch calls as [image, text] with
+  // no system prompt, so they share an identical image prefix. If llama.cpp
+  // recognizes it, batch TTFT should collapse. Implies imageInTranslatePass.
+  tryPrefixCache: false
 };
 
 async function getSettings() {
@@ -150,7 +154,12 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const pipe = makePipeline(tab.id, STAGES[info.menuItemId] ?? ["Process"]);
 
   // onProgress is throttled inside callLM (150ms). onStage fires at transitions.
-  const opts = { ctx, onProgress: pipe.progress, onStage: pipe.next };
+  const opts = {
+    ctx,
+    onProgress: pipe.progress,
+    onStage: pipe.next,
+    onNote: pipe.note
+  };
 
   try {
     let result;
@@ -214,6 +223,7 @@ async function callLM(messages, opts = {}) {
     stream_options: { include_usage: true }
   };
   if (cfg.model) body.model = cfg.model;
+  if (opts.responseFormat) body.response_format = opts.responseFormat;
 
   const t0 = performance.now();
   const stat = {
@@ -367,7 +377,8 @@ async function translateImage(srcUrl, opts = {}) {
   const sys = cfg.systemPrompt.replace("{LANG}", cfg.targetLang);
 
   opts.onStage?.(); // → Grab image
-  const dataUrl = await grabImage(srcUrl, opts.ctx);
+  const { dataUrl, method } = await grabImage(srcUrl, opts.ctx);
+  opts.onNote?.(method);
 
   opts.onStage?.(); // → Translate
   return callLM([
@@ -389,24 +400,60 @@ async function translateImage(srcUrl, opts = {}) {
 }
 
 // ─── Grounded image translation (Gemma-style box_2d) ─────────────────────────
+
+// JSON schema for the detection output. Compiled to a GBNF grammar by
+// llama.cpp — the sampler masks tokens that would produce invalid JSON,
+// so unescaped quotes in OCR'd labels become impossible by construction.
+const DETECT_SCHEMA = {
+  type: "json_schema",
+  json_schema: {
+    name: "text_regions",
+    strict: true,
+    schema: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          box_2d: {
+            type: "array",
+            items: { type: "integer" },
+            minItems: 4,
+            maxItems: 4
+          },
+          label: { type: "string" }
+        },
+        required: ["box_2d", "label"],
+        additionalProperties: false
+      }
+    }
+  }
+};
+
 async function detectAndTranslate(srcUrl, opts = {}) {
   const cfg = await getSettings();
 
   opts.onStage?.(); // → Grab image
-  const dataUrl = await grabImage(srcUrl, opts.ctx);
+  const { dataUrl, method } = await grabImage(srcUrl, opts.ctx);
+  opts.onNote?.(method);
 
   opts.onStage?.(); // → Detect regions
+  // Image-first when testing prefix cache so the image tokens sit at position 0.
+  const detectContent = cfg.tryPrefixCache
+    ? [
+        { type: "image_url", image_url: { url: dataUrl } },
+        { type: "text", text: cfg.detectPrompt }
+      ]
+    : [
+        { type: "text", text: cfg.detectPrompt },
+        { type: "image_url", image_url: { url: dataUrl } }
+      ];
   const rawDetect = await callLM(
-    [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: cfg.detectPrompt },
-          { type: "image_url", image_url: { url: dataUrl } }
-        ]
-      }
-    ],
-    { kind: "detect", onProgress: opts.onProgress }
+    [{ role: "user", content: detectContent }],
+    {
+      kind: "detect",
+      onProgress: opts.onProgress,
+      responseFormat: DETECT_SCHEMA
+    }
   );
 
   const detected = extractJsonArray(rawDetect);
@@ -441,35 +488,66 @@ const SEG = "<<<SEG>>>";
 async function translateBatch(labels, cfg, dataUrl, opts = {}) {
   if (labels.length === 0) return [];
 
-  const withImage = cfg.imageInTranslatePass && dataUrl;
+  const segText = labels.join(`\n${SEG}\n`);
+  const baseInstr =
+    `Translate each segment below into ${cfg.targetLang}. Segments are ` +
+    `separated by the exact marker "${SEG}". Return ONLY the translations, ` +
+    `separated by the same "${SEG}" marker, in the same order. Do not number, ` +
+    `do not add commentary, do not merge segments.`;
 
-  let sys =
-    `You are a translation engine. The user will send text segments separated ` +
-    `by the exact marker "${SEG}". Translate each segment into ${cfg.targetLang}. ` +
-    `Return ONLY the translations, separated by the same "${SEG}" marker, in the ` +
-    `same order. Do not number, do not add commentary, do not merge segments.`;
+  let messages, kind;
 
-  if (withImage) {
-    sys +=
-      ` The source image is attached for visual context — use it to resolve ` +
-      `ambiguity, but still output only the translated segments.`;
+  if (cfg.tryPrefixCache && dataUrl) {
+    // Prefix-cache experiment: no system message, image as the very first
+    // content block. This call's prefix is now bit-identical to the detect
+    // call's prefix (just the image tokens). If llama.cpp's prompt cache
+    // survives between requests and recognizes the match, TTFT here should
+    // drop to near the cost of encoding the text suffix alone.
+    messages = [
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: dataUrl } },
+          {
+            type: "text",
+            text:
+              baseInstr +
+              ` The image above is the source these segments came from — ` +
+              `use it for context.\n\n` +
+              segText
+          }
+        ]
+      }
+    ];
+    kind = "batch+pfx";
+  } else if (cfg.imageInTranslatePass && dataUrl) {
+    messages = [
+      {
+        role: "system",
+        content:
+          `You are a translation engine. ` +
+          baseInstr +
+          ` The source image is attached for visual context — use it to ` +
+          `resolve ambiguity, but still output only the translated segments.`
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: segText },
+          { type: "image_url", image_url: { url: dataUrl } }
+        ]
+      }
+    ];
+    kind = "batch+img";
+  } else {
+    messages = [
+      { role: "system", content: `You are a translation engine. ` + baseInstr },
+      { role: "user", content: segText }
+    ];
+    kind = "batch";
   }
 
-  const segText = labels.join(`\n${SEG}\n`);
-  const userContent = withImage
-    ? [
-        { type: "text", text: segText },
-        { type: "image_url", image_url: { url: dataUrl } }
-      ]
-    : segText;
-
-  const raw = await callLM(
-    [
-      { role: "system", content: sys },
-      { role: "user", content: userContent }
-    ],
-    { kind: withImage ? "batch+img" : "batch", onProgress: opts.onProgress }
-  );
+  const raw = await callLM(messages, { kind, onProgress: opts.onProgress });
 
   const parts = raw.split(SEG).map((s) => s.trim());
 
@@ -508,18 +586,16 @@ async function grabImage(srcUrl, ctx) {
         { frameId: ctx.frameId ?? 0 }
       );
       if (resp?.ok && resp.dataUrl) {
-        console.debug(`[LM Translate] image via ${resp.method}`);
-        return resp.dataUrl;
+        return { dataUrl: resp.dataUrl, method: resp.method };
       }
       console.debug(`[LM Translate] page grab failed: ${resp?.error}`);
     } catch (e) {
       // Content script not present (restricted page) — fall through.
-      console.debug("[LM Translate] no content script, using SW fetch");
     }
   }
 
-  console.debug("[LM Translate] image via SW fetch");
-  return swFetchImage(srcUrl);
+  const dataUrl = await swFetchImage(srcUrl);
+  return { dataUrl, method: "sw-fetch" };
 }
 
 async function swFetchImage(url) {

@@ -9,11 +9,12 @@ const DEFAULTS = {
     "Identify all text blobs in this image. Return a JSON array where each " +
     "element is {\"box_2d\": [ymin, xmin, ymax, xmax], \"label\": \"<the text>\"}. " +
     "Coordinates are normalized to 0-1000. Return ONLY the JSON array.",
-  imageInTranslatePass: false
+  imageInTranslatePass: false,
+  tryPrefixCache: false
 };
 
 const textFields = ["endpoint", "model", "targetLang", "systemPrompt", "detectPrompt"];
-const boolFields = ["imageInTranslatePass"];
+const boolFields = ["imageInTranslatePass", "tryPrefixCache"];
 
 async function load() {
   const cfg = await chrome.storage.sync.get(DEFAULTS);
