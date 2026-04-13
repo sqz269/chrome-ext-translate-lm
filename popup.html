@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 380px;
+      padding: 14px;
+      font: 13px/1.4 -apple-system, Segoe UI, sans-serif;
+      background: #1e1e1e;
+      color: #e8e8e8;
+      margin: 0;
+    }
+    h4 { margin: 18px 0 6px; font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: .5px; }
+    .stats-summary { font-size: 11px; color: #888; margin-bottom: 6px; }
+    .stats-summary b { color: #e8e8e8; }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid #2d2d2d; }
+    th { color: #888; font-weight: normal; position: sticky; top: 0; background: #1e1e1e; }
+    td:first-child, th:first-child { text-align: left; }
+    tr.err td { color: #ff6b6b; }
+    .stats-wrap { max-height: 180px; overflow-y: auto; }
+    .kind { display: inline-block; padding: 1px 5px; border-radius: 3px; background: #2d2d2d; font-size: 10px; }
+    #clear-stats { width: auto; padding: 4px 10px; margin-top: 6px; font-size: 11px; background: #3a3a3a; }
+    #clear-stats:hover { background: #4a4a4a; }
+    h3 { margin: 0 0 12px; font-size: 14px; }
+    label { display: block; margin: 10px 0 4px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+    input, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      background: #2d2d2d;
+      border: 1px solid #444;
+      color: #e8e8e8;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font: inherit;
+    }
+    textarea { resize: vertical; min-height: 60px; }
+    button {
+      margin-top: 14px;
+      width: 100%;
+      padding: 8px;
+      background: #0e639c;
+      border: none;
+      color: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { background: #1177bb; }
+    #status { margin-top: 8px; font-size: 11px; color: #6a9955; min-height: 14px; }
+  </style>
+</head>
+<body>
+  <h3>LM Translate</h3>
+
+  <label for="endpoint">Endpoint</label>
+  <input id="endpoint" type="text">
+
+  <label for="model">Model (blank = auto)</label>
+  <input id="model" type="text" placeholder="e.g. qwen2-vl-7b-instruct">
+
+  <label for="targetLang">Target language</label>
+  <input id="targetLang" type="text">
+
+  <label for="systemPrompt">System prompt</label>
+  <textarea id="systemPrompt"></textarea>
+
+  <label for="detectPrompt">Detection prompt (box overlay)</label>
+  <textarea id="detectPrompt"></textarea>
+
+  <button id="save">Save</button>
+  <div id="status"></div>
+
+  <h4>Diagnostics</h4>
+  <div class="stats-summary" id="stats-summary">No calls yet.</div>
+  <div class="stats-wrap">
+    <table>
+      <thead>
+        <tr><th>Kind</th><th>TTFT</th><th>Total</th><th>TBT</th><th>tok/s</th><th>P/C</th></tr>
+      </thead>
+      <tbody id="stats-body"></tbody>
+    </table>
+  </div>
+  <button id="clear-stats">Clear</button>
+
+  <script src="popup.js"></script>
+</body>
+</html>
