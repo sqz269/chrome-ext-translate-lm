@@ -24,6 +24,87 @@ async function getSettings() {
   return { ...DEFAULTS, ...stored };
 }
 
+// ─── Pipeline tracker ─────────────────────────────────────────────────────────
+// Pre-declared stages per menu item so the overlay can show what's coming.
+const STAGES = {
+  "lm-translate-text": ["Translate"],
+  "lm-translate-element": ["Extract element", "Translate"],
+  "lm-translate-image": ["Grab image", "Translate"],
+  "lm-translate-image-overlay": ["Grab image", "Detect regions", "Translate batch"]
+};
+
+function makePipeline(tabId, labels) {
+  const stages = labels.map((label) => ({ label, state: "pending" }));
+  let idx = -1;
+  let t0 = null;
+
+  const snapshot = (extra = {}) => ({
+    stages: stages.map((s) => ({ ...s })), // deep-ish copy for safe injection
+    elapsed: t0 != null ? performance.now() - t0 : 0,
+    ...extra
+  });
+
+  const push = (extra) =>
+    injectOverlay(tabId, { pipeline: snapshot(extra) }).catch(() => {});
+
+  // Close out whichever stage is active so we can advance or finish.
+  const closeActive = () => {
+    const cur = stages[idx];
+    if (cur?.state === "active") {
+      cur.state = "done";
+      cur.elapsed = performance.now() - cur.t0;
+    }
+  };
+
+  // Push immediately so the user sees the pending list before any work starts.
+  push();
+
+  return {
+    // Advance to the next stage. Auto-closes the previous one.
+    next() {
+      if (t0 == null) t0 = performance.now();
+      closeActive();
+      idx++;
+      const cur = stages[idx];
+      if (cur) {
+        cur.state = "active";
+        cur.t0 = performance.now();
+      }
+      push();
+    },
+    // Live numbers for the active stage (called by callLM's 150ms interval).
+    progress(p) {
+      const cur = stages[idx];
+      if (cur) {
+        cur.tokens = p.tokens;
+        cur.ttft = p.ttft;
+        cur.elapsed = performance.now() - cur.t0;
+      }
+      push();
+    },
+    // Annotate the active stage with extra info (e.g. "6 regions").
+    note(text) {
+      const cur = stages[idx];
+      if (cur) cur.note = text;
+    },
+    // Mark the active stage as failed and render the error.
+    fail(err) {
+      const cur = stages[idx];
+      if (cur) {
+        cur.state = "error";
+        cur.elapsed = cur.t0 ? performance.now() - cur.t0 : null;
+      }
+      return push({ done: true, error: err });
+    },
+    // Close the last stage and render the final result + summary.
+    finish(payload) {
+      closeActive();
+      const totalTokens = stages.reduce((n, s) => n + (s.tokens || 0), 0);
+      return push({ done: true, totalTokens, ...payload });
+    }
+  };
+}
+
 // ─── Context menus ────────────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(async () => {
   // Retro-inject content.js into already-open tabs. Manifest content_scripts
@@ -65,58 +146,59 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
 
-  // Show "loading" overlay immediately
-  await injectOverlay(tab.id, { loading: true });
-
-  // Push live progress to the overlay (throttled inside callLM at 150ms).
-  // Fire-and-forget so we don't block the SSE reader on script injection.
-  const onProgress = (p) => {
-    injectOverlay(tab.id, { progress: p }).catch(() => {});
-  };
-
-  // Tab/frame context for content-script-mediated operations (image grab).
   const ctx = { tabId: tab.id, frameId: info.frameId ?? 0 };
+  const pipe = makePipeline(tab.id, STAGES[info.menuItemId] ?? ["Process"]);
+
+  // onProgress is throttled inside callLM (150ms). onStage fires at transitions.
+  const opts = { ctx, onProgress: pipe.progress, onStage: pipe.next };
 
   try {
     let result;
+
     if (info.menuItemId === "lm-translate-text" && info.selectionText) {
-      result = await translateText(info.selectionText, { onProgress });
+      pipe.next(); // → Translate
+      result = await translateText(info.selectionText, opts);
+
     } else if (info.menuItemId === "lm-translate-element") {
-      // Ask the content script what was under the cursor at right-click time.
-      // frameId matters for iframes (e.g. embedded tweets).
+      pipe.next(); // → Extract element
       let resp;
       try {
         resp = await chrome.tabs.sendMessage(
           tab.id,
           { cmd: "lmt:extractElement" },
-          { frameId: info.frameId ?? 0 }
+          { frameId: ctx.frameId }
         );
-      } catch (e) {
-        // "Receiving end does not exist" — content script never loaded in this
-        // frame (restricted page, or a race we couldn't retro-inject around).
+      } catch {
         throw new Error(
           "Content script not loaded here. Try refreshing the page, " +
             "or this may be a restricted page (chrome://, PDF viewer, etc.)."
         );
       }
       if (!resp?.ok) throw new Error(resp?.error || "Could not read element.");
-      result = await translateText(resp.text, { onProgress });
+      pipe.note(`<${resp.tag}> ${resp.chars} chars`);
+
+      pipe.next(); // → Translate
+      result = await translateText(resp.text, opts);
+
     } else if (info.menuItemId === "lm-translate-image" && info.srcUrl) {
-      result = await translateImage(info.srcUrl, { onProgress, ctx });
+      // translateImage drives its own stages via onStage.
+      result = await translateImage(info.srcUrl, opts);
+
     } else if (info.menuItemId === "lm-translate-image-overlay" && info.srcUrl) {
-      const regions = await detectAndTranslate(info.srcUrl, { onProgress, ctx });
+      // detectAndTranslate drives its own stages via onStage.
+      const regions = await detectAndTranslate(info.srcUrl, opts);
       await injectBoxOverlay(tab.id, info.srcUrl, regions);
-      await injectOverlay(tab.id, { text: `${regions.length} region(s) — hover to read.` });
+      await pipe.finish({ text: `${regions.length} region(s) — hover to read.` });
       return;
+
     } else {
       throw new Error("Nothing to translate.");
     }
-    await injectOverlay(tab.id, { text: result });
+
+    await pipe.finish({ text: result });
   } catch (err) {
     console.error("[LM Translate]", err);
-    await injectOverlay(tab.id, {
-      error: err.message || String(err)
-    });
+    await pipe.fail(err.message || String(err));
   }
 });
 
@@ -182,6 +264,17 @@ async function callLM(messages, opts = {}) {
     stat.completionTokens = usage?.completion_tokens ?? null;
     stat.model = model;
     stat.ok = true;
+
+    // Final progress tick with the real usage count, so completed stages
+    // show exact numbers instead of the delta-count approximation.
+    if (opts.onProgress) {
+      opts.onProgress({
+        elapsed: stat.total,
+        tokens: stat.completionTokens ?? live.tokens,
+        ttft: stat.ttft,
+        kind: stat.kind
+      });
+    }
 
     if (!content) throw new Error("Empty response from model.");
     return content.trim();
@@ -273,8 +366,10 @@ async function translateImage(srcUrl, opts = {}) {
   const cfg = await getSettings();
   const sys = cfg.systemPrompt.replace("{LANG}", cfg.targetLang);
 
+  opts.onStage?.(); // → Grab image
   const dataUrl = await grabImage(srcUrl, opts.ctx);
 
+  opts.onStage?.(); // → Translate
   return callLM([
     { role: "system", content: sys },
     {
@@ -296,9 +391,11 @@ async function translateImage(srcUrl, opts = {}) {
 // ─── Grounded image translation (Gemma-style box_2d) ─────────────────────────
 async function detectAndTranslate(srcUrl, opts = {}) {
   const cfg = await getSettings();
+
+  opts.onStage?.(); // → Grab image
   const dataUrl = await grabImage(srcUrl, opts.ctx);
 
-  // 1. Detection pass — vision call, returns JSON with boxes.
+  opts.onStage?.(); // → Detect regions
   const rawDetect = await callLM(
     [
       {
@@ -317,8 +414,7 @@ async function detectAndTranslate(srcUrl, opts = {}) {
 
   const labels = detected.map((d) => String(d.label ?? ""));
 
-  // 2. Translation pass — batched with a hard delimiter. Optionally include
-  // the image again for visual context.
+  opts.onStage?.(); // → Translate batch
   const translations = await translateBatch(labels, cfg, dataUrl, opts);
 
   return detected.map((d, i) => ({
@@ -661,41 +757,94 @@ function showOverlay(payload) {
 
   const body = el.querySelector(".lmt-body");
 
-  if (payload.loading) {
-    body.textContent = "Translating…";
-    body.style.color = "#aaa";
-  } else if (payload.progress) {
-    const p = payload.progress;
-    const elapsed = (p.elapsed / 1000).toFixed(1);
-    body.style.color = "#aaa";
-    body.innerHTML = "";
+  body.innerHTML = "";
+  body.style.color = "#e8e8e8";
 
-    const title = document.createElement("div");
-    title.textContent =
-      p.kind === "detect" ? "Detecting text…" : "Translating…";
-    title.style.cssText = "color:#e8e8e8;margin-bottom:6px";
-    body.appendChild(title);
+  // ── Pipeline stepper ────────────────────────────────────────────────
+  const pl = payload.pipeline;
+  if (pl?.stages) {
+    const fmt = (ms) =>
+      ms == null ? "" : ms < 1000 ? Math.round(ms) + "ms" : (ms / 1000).toFixed(2) + "s";
 
-    const stats = document.createElement("div");
-    stats.style.cssText =
-      "font-family:ui-monospace,Consolas,monospace;font-size:11px";
+    const ICON = { pending: "○", active: "◐", done: "✓", error: "✕" };
+    const COLOR = {
+      pending: "#555",
+      active: "#5af",
+      done: "#6a9955",
+      error: "#ff6b6b"
+    };
 
-    if (p.ttft == null) {
-      // Still in prefill — no tokens yet.
-      stats.textContent = `${elapsed}s · waiting for first token…`;
-    } else {
-      const genMs = p.elapsed - p.ttft;
-      const tps = genMs > 0 ? (p.tokens / (genMs / 1000)).toFixed(1) : "—";
-      const ttftS = (p.ttft / 1000).toFixed(2);
-      stats.textContent =
-        `${elapsed}s · ${p.tokens} tok · ${tps} tok/s · TTFT ${ttftS}s`;
+    const list = document.createElement("div");
+    list.style.cssText =
+      "font:11px/1.6 ui-monospace,Consolas,monospace;margin-bottom:8px";
+
+    for (const s of pl.stages) {
+      const row = document.createElement("div");
+      row.style.cssText =
+        "display:flex;gap:8px;align-items:baseline;padding:1px 0";
+
+      const ic = document.createElement("span");
+      ic.textContent = ICON[s.state] || "○";
+      ic.style.cssText = `color:${COLOR[s.state]};width:12px;flex:none`;
+
+      const lbl = document.createElement("span");
+      lbl.textContent = s.label + (s.note ? ` · ${s.note}` : "");
+      lbl.style.cssText = `flex:1;color:${s.state === "pending" ? "#666" : "#ccc"}`;
+
+      const stat = document.createElement("span");
+      stat.style.cssText = `color:${COLOR[s.state]};text-align:right`;
+      if (s.state === "active") {
+        const el = fmt(s.elapsed);
+        if (s.ttft == null) {
+          stat.textContent = s.elapsed != null ? `${el} prefill…` : "…";
+        } else {
+          const gen = s.elapsed - s.ttft;
+          const tps = gen > 0 ? (s.tokens / (gen / 1000)).toFixed(0) : "—";
+          stat.textContent = `${el} · ${s.tokens}tok · ${tps}/s`;
+        }
+      } else if (s.state === "done") {
+        const parts = [fmt(s.elapsed)];
+        if (s.tokens) {
+          const gen = s.ttft != null ? s.elapsed - s.ttft : s.elapsed;
+          const tps = gen > 0 ? (s.tokens / (gen / 1000)).toFixed(0) : "—";
+          parts.push(`${s.tokens}tok`, `${tps}/s`);
+          if (s.ttft != null) parts.push(`TTFT ${fmt(s.ttft)}`);
+        }
+        stat.textContent = parts.join(" · ");
+      } else if (s.state === "error") {
+        stat.textContent = fmt(s.elapsed);
+      }
+
+      row.appendChild(ic);
+      row.appendChild(lbl);
+      row.appendChild(stat);
+      list.appendChild(row);
     }
-    body.appendChild(stats);
-  } else if (payload.error) {
-    body.textContent = "Error: " + payload.error;
-    body.style.color = "#ff6b6b";
-  } else {
-    body.textContent = payload.text;
-    body.style.color = "#e8e8e8";
+    body.appendChild(list);
+
+    // Summary line
+    const sum = document.createElement("div");
+    sum.style.cssText =
+      "font:11px ui-monospace,Consolas,monospace;color:#888;" +
+      "border-top:1px solid #333;padding-top:6px;margin-bottom:8px";
+    if (pl.done) {
+      const tt = pl.totalTokens ? ` · ${pl.totalTokens} tok total` : "";
+      sum.textContent = `Total ${fmt(pl.elapsed)}${tt}`;
+    } else {
+      sum.textContent = `${fmt(pl.elapsed)} elapsed`;
+    }
+    body.appendChild(sum);
+  }
+
+  // ── Result / error ──────────────────────────────────────────────────
+  if (pl?.error) {
+    const err = document.createElement("div");
+    err.textContent = "Error: " + pl.error;
+    err.style.color = "#ff6b6b";
+    body.appendChild(err);
+  } else if (pl?.text) {
+    const out = document.createElement("div");
+    out.textContent = pl.text;
+    body.appendChild(out);
   }
 }
