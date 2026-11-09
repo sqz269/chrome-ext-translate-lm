@@ -65,6 +65,15 @@ Calls are tagged by kind (`text`, `image`, `detect`, `batch`) so the two-pass ho
 - **Image fetching** — done from the service worker to bypass page CSP; requires `<all_urls>` host permission
 - **Box positioning** — viewport layers follow image bounds on scroll, resize, and layout shifts; boxes use normalized CSS percentages. Cropped/object-fit images and rotated images may need additional alignment support.
 
+## Development
+
+The extension has no build step and no runtime dependencies; `package.json` only holds dev tooling. `node_modules/` sits in the extension folder and Chrome ignores it.
+
+- `npm install` once (Node 22 or later, Python 3 for the bridge tests).
+- `npm run check` runs everything that is free and offline: `npm run lint` (ESLint, bug rules only: undefined names, unused code) and `npm test` (the `tests/*.test.cjs` Node tests and the `tests/test_*.py` bridge tests). GitHub Actions runs the same command on pushes to `main` and on pull requests.
+- `npm run test:e2e` is the paid, online reader check described below. It is not part of `check`.
+- Files are plain scripts that share globals. When a page loads another script's global (as `reader.html` does with `EH` and `Balloon`), declare it in `eslint.config.mjs`.
+
 ## Overlay usability (0.4.0)
 
 Panels and image controls now use a Shadow DOM with isolated styles and a top-layer host. The fixed panel header keeps Close, Copy, and Minimize available while long results scroll. Closing a request suppresses its later progress updates; it does not cancel server inference. Escape closes the panel, then closes boxes on a second press.

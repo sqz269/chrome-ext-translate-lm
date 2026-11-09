@@ -1,0 +1,19 @@
+{
+  "name": "lm-translate",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Dev tooling for the LM Translate extension. The extension itself has no build step and no runtime dependencies.",
+  "scripts": {
+    "lint": "eslint .",
+    "test:js": "node --test tests/*.test.cjs",
+    "test:py": "python -B -m unittest discover -s tests -p \"test_*.py\"",
+    "test": "npm run test:js && npm run test:py",
+    "check": "npm run lint && npm test",
+    "test:e2e": "node tests/reader-e2e.cjs --go"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0"
+  }
+}

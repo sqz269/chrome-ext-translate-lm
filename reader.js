@@ -198,7 +198,7 @@ async function toJpegDataUrl(blob) {
 }
 
 // ─── Opening a gallery ───────────────────────────────────────────────────────
-async function open() {
+async function openBook() {
   const url = new URLSearchParams(location.search).get('url') || '';
   S.source = EH.parseSource(url);
   if (!S.source) throw new Error('Open the reader from an e-hentai gallery or page (right-click → “Open this gallery in the translated reader”).');
@@ -207,20 +207,20 @@ async function open() {
 
   let galleryUrl = S.source.galleryUrl;
   if (S.source.kind === 'viewer') {
-    status('Finding the gallery for this page…');
+    setStatus('Finding the gallery for this page…');
     galleryUrl = EH.parseViewer(await siteHtml(S.source.viewerUrl, null, LISTING_GAP_MS)).galleryUrl;
     if (!galleryUrl) throw new Error('Could not find the gallery link on this page.');
   }
   const g = EH.parseSource(galleryUrl);
   Object.assign(S, { gid: g.gid, token: g.token, galleryUrl: g.galleryUrl });
 
-  status('Reading gallery…');
+  setStatus('Reading gallery…');
   const first = EH.parseGallery(await siteHtml(S.galleryUrl, null, LISTING_GAP_MS), S.gid);
   if (first.contentWarning) throw new Error('This gallery shows a content warning. Open it in a normal tab, choose “View Gallery”, then open the reader again.');
   if (!first.hasThumbs) throw new Error('Could not read this gallery page. The site layout may have changed, or the gallery is unavailable.');
   const entries = new Map(first.entries.map((e) => [e.n, e]));
   for (let p = 1; p <= first.lastListing; p++) {
-    status(`Reading gallery… page list ${p + 1} of ${first.lastListing + 1}`);
+    setStatus(`Reading gallery… page list ${p + 1} of ${first.lastListing + 1}`);
     const more = EH.parseGallery(await siteHtml(`${S.galleryUrl}?p=${p}`, null, LISTING_GAP_MS), S.gid);
     for (const e of more.entries) entries.set(e.n, e);
   }
@@ -666,7 +666,7 @@ async function start() {
   const to = Math.min(S.pages.length, +$('to').value || S.pages.length);
   const redo = $('redo').checked;
   const targets = S.pages.slice(from - 1, to).filter((p) => p.entry && (redo || !p.regions || !p.imgUrl));
-  if (!targets.length) { status('Nothing to do in that range.'); return; }
+  if (!targets.length) { setStatus('Nothing to do in that range.'); return; }
   const parallel = +$('parallel').value || 1;
   const memory = useMemory();
   const ctl = new AbortController();
@@ -766,7 +766,7 @@ async function start() {
   S.run = null;
   controls(false);
   refreshStatus();
-  if (run.stop !== 'unreachable') status(ctl.signal.aborted ? 'Cancelled.' : `Finished ${run.finished - run.failed} of ${run.total} page(s)${run.failed ? `, ${run.failed} failed` : ''}.`);
+  if (run.stop !== 'unreachable') setStatus(ctl.signal.aborted ? 'Cancelled.' : `Finished ${run.finished - run.failed} of ${run.total} page(s)${run.failed ? `, ${run.failed} failed` : ''}.`);
 }
 
 async function loadPage(p, signal) {
@@ -907,7 +907,7 @@ function friendlyError(message) {
 
 async function single(p) {
   if (S.stale) { alertBox(STALE_MESSAGE, true); return; }
-  if (S.run) { status('Wait for the current run to finish, or cancel it, before retranslating a single page.'); return; }
+  if (S.run) { setStatus('Wait for the current run to finish, or cancel it, before retranslating a single page.'); return; }
   const ctl = new AbortController();
   S.run = { ctl, paused: false, total: 1, finished: 0, failed: 0, wake() {} };
   controls(true);
@@ -956,14 +956,14 @@ function refreshStatus() {
   if (busy) parts.push(`${busy} in progress`);
   if (failed) parts.push(`${failed} failed`);
   if (S.run?.paused) parts.push('paused; running pages will finish');
-  status(parts.join(' · '));
+  setStatus(parts.join(' · '));
   const u = S.usage;
   $('status-cost').textContent = u.prompt || u.completion
     ? `This session: ${(u.prompt / 1000).toFixed(0)}k in / ${(u.completion / 1000).toFixed(0)}k out tokens${u.cost ? ` · est. $${u.cost.toFixed(3)}${u.priced ? '' : '+'}` : ''}`
     : '';
   $('status-cost').title = 'Estimated from reported tokens and third-party list prices (intro), unverified with Google.';
 }
-const status = (text) => { $('status-text').textContent = text; };
+const setStatus = (text) => { $('status-text').textContent = text; };
 function alertBox(text, error = false) {
   const a = $('alert');
   a.hidden = !text;
@@ -1010,7 +1010,7 @@ $('glossary').addEventListener('close', async () => {
   S.glossary.text = $('glossary-text').value;
   S.glossary.useTags = $('use-tags').checked;
   await dbPut('glossaries', { scope: S.glossary.scope, text: S.glossary.text, useTags: S.glossary.useTags, updated: Date.now() }).catch((e) => alertBox(`Could not save the glossary: ${e.message}`, true));
-  status(`Glossary saved (${parseGlossary(S.glossary.text).length} entries).`);
+  setStatus(`Glossary saved (${parseGlossary(S.glossary.text).length} entries).`);
 });
 
 // ─── Wiring ──────────────────────────────────────────────────────────────────
@@ -1072,8 +1072,8 @@ addEventListener('keydown', (e) => {
 addEventListener('keyup', (e) => { if (e.key === 'Shift') document.body.classList.remove('peek'); });
 addEventListener('blur', () => document.body.classList.remove('peek'));
 
-open().catch((e) => {
+openBook().catch((e) => {
   $('title').textContent = 'Could not open this gallery';
   alertBox(e.message, true);
-  status('');
+  setStatus('');
 });
