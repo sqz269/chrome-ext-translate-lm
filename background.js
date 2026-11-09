@@ -332,9 +332,15 @@ async function callLM(messages, opts = {}) {
   }
 
   try {
+    const headers = { "Content-Type": "application/json" };
+    // A remote Vertex bridge requires its token; it is only ever sent with the Vertex presets.
+    if (cfg.provider?.startsWith('vertex')) {
+      const { bridgeToken } = await chrome.storage.local.get('bridgeToken');
+      if (bridgeToken) headers.Authorization = `Bearer ${bridgeToken}`;
+    }
     const res = await fetch(cfg.endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
       signal: opts.signal
     });

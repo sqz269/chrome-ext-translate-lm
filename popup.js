@@ -17,8 +17,13 @@ const DEFAULTS = {
 const textFields = ["endpoint", "model", "targetLang", "systemPrompt", "detectPrompt"];
 const boolFields = ["gemmaVllm", "gemmaImageVerification", "imageInTranslatePass", "tryPrefixCache", "preemptiveCors"];
 
+// The bridge token and the last Vertex bridge address are kept per device (chrome.storage.local), not synced.
+const LOCAL_BRIDGE = 'http://127.0.0.1:8001/v1/chat/completions';
+
 async function load() {
   const cfg = await chrome.storage.sync.get(DEFAULTS);
+  const { bridgeToken = '' } = await chrome.storage.local.get('bridgeToken');
+  document.getElementById('bridgeToken').value = bridgeToken;
   document.getElementById('provider').value = cfg.provider || 'custom';
   updateProviderNote();
   for (const f of textFields) {
@@ -41,7 +46,12 @@ document.getElementById("save").addEventListener("click", async () => {
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
     if (!out.targetLang.trim()) throw new Error();
   } catch { s.textContent = 'Enter an HTTP(S) endpoint and a target language.'; return; }
-  try { await chrome.storage.sync.set(out); }
+  try {
+    await chrome.storage.sync.set(out);
+    const local = { bridgeToken: document.getElementById('bridgeToken').value.trim() };
+    if (out.provider.startsWith('vertex')) local.vertexEndpoint = out.endpoint;
+    await chrome.storage.local.set(local);
+  }
   catch (e) { s.textContent = 'Could not save: ' + e.message; return; }
   s.textContent = "Saved.";
   setTimeout(() => (s.textContent = ""), 1500);
@@ -55,11 +65,13 @@ function updateProviderNote() {
     ? 'Paid Google Vertex API. Selected text and images are sent to Google through the local bridge. Start Start-VertexBridge.ps1 first. Project: buoyant-program-477612-e3 · location: us.' + (document.getElementById('provider').value === 'vertexhybrid' ? ' Model field controls detection; translation uses 3.8 Flash Low.' : document.getElementById('provider').value === 'vertexargonflash' ? ' Model field controls detection; translation uses 3.6 Flash Minimal. Best quality per second in eval-v2 (about 27 s per page).' : '')
     : 'Local/custom endpoint. Select a preset to fill connection settings, then Save.';
 }
-document.getElementById('provider').addEventListener('change', event => {
+document.getElementById('provider').addEventListener('change', async event => {
   const id = event.target.value;
   if (id !== 'custom') {
     const vertex = id.startsWith('vertex');
-    document.getElementById('endpoint').value = vertex ? 'http://127.0.0.1:8001/v1/chat/completions' : DEFAULTS.endpoint;
+    // Vertex presets reuse this device's last bridge address (local or remote).
+    const { vertexEndpoint } = await chrome.storage.local.get('vertexEndpoint');
+    document.getElementById('endpoint').value = vertex ? (vertexEndpoint || LOCAL_BRIDGE) : DEFAULTS.endpoint;
     document.getElementById('model').value = id === 'vertex36' || id === 'vertexhybrid' ? 'gemini-3.6-flash-minimal' : id === 'vertex38' ? 'gemini-3.8-flash-low' : id === 'vertexargon' || id === 'vertexargonflash' ? 'gemini-4-argon-low' : DEFAULTS.model;
     document.getElementById('gemmaVllm').checked = !vertex;
     document.getElementById('gemmaImageVerification').checked = true;
@@ -80,7 +92,10 @@ document.getElementById('test-connection').addEventListener('click', async (even
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP(S) endpoint.');
     url.pathname = url.pathname.replace(/\/chat\/completions\/?$/, '/models');
     if (!url.pathname.endsWith('/models')) throw new Error('Expected a /chat/completions endpoint.');
-    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const token = document.getElementById('bridgeToken').value.trim();
+    const vertex = document.getElementById('provider').value.startsWith('vertex');
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000), headers: vertex && token ? { Authorization: `Bearer ${token}` } : {} });
+    if (response.status === 401) throw new Error('The bridge rejected the token. Paste the token from the bridge host.');
     if (!response.ok) throw new Error(`Server returned HTTP ${response.status}.`);
     const data = await response.json();
     const models = (data.data || []).map(m => m.id).filter(Boolean);

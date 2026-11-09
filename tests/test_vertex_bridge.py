@@ -52,6 +52,17 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bridge.build_request({'messages': msg, 'media_resolution': 'ultra'})
 
+    def test_token_and_hosts(self):
+        self.assertTrue(bridge.token_ok(None, None))
+        self.assertTrue(bridge.token_ok('Bearer s3cret-token-0123456789', 's3cret-token-0123456789'))
+        self.assertTrue(bridge.token_ok('bearer s3cret-token-0123456789', 's3cret-token-0123456789'))
+        self.assertFalse(bridge.token_ok(None, 's3cret-token-0123456789'))
+        self.assertFalse(bridge.token_ok('Bearer wrong', 's3cret-token-0123456789'))
+        self.assertFalse(bridge.token_ok('s3cret-token-0123456789', 's3cret-token-0123456789'))
+        self.assertTrue(bridge.host_permitted('127.0.0.1:8001', 8001, set()))
+        self.assertFalse(bridge.host_permitted('nixos.example.ts.net:8443', 8001, set()))
+        self.assertTrue(bridge.host_permitted('nixos.example.ts.net:8443', 8001, {'nixos.example.ts.net:8443'}))
+
     def test_policy_blocks_are_named(self):
         self.assertEqual(bridge.incomplete_message('PROHIBITED_CONTENT', None), 'Blocked by Google content policy (PROHIBITED_CONTENT).')
         self.assertEqual(bridge.incomplete_message(None, 'SAFETY'), 'Blocked by Google content policy (SAFETY).')

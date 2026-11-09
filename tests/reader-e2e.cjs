@@ -1,6 +1,7 @@
 // Live end-to-end check of the batch reader (reader.html) in a throwaway headless Chrome profile.
 //
 //   node tests/reader-e2e.cjs --go [--gallery URL] [--pages 2-5] [--preset vertex36|vertexargonflash]
+//                               [--endpoint https://host:8443/v1/chat/completions]   (token in LMT_BRIDGE_TOKEN)
 //
 // Paid and online: it reads a real e-hentai gallery (anonymously, at the reader's normal pace) and translates
 // the chosen pages through the local Vertex bridge, which must be running. Chrome loads the unpacked
@@ -27,6 +28,8 @@ const PRESETS = {
   vertexargonflash: { provider: 'vertexargonflash', model: 'gemini-4-argon-low' }
 };
 const PRESET = PRESETS[opt('preset', 'vertex36')];
+const ENDPOINT = opt('endpoint', 'http://127.0.0.1:8001/v1/chat/completions');
+const TOKEN = process.env.LMT_BRIDGE_TOKEN || '';
 if (!PRESET) throw new Error('Unknown preset');
 
 function launch(profile) {
@@ -81,7 +84,8 @@ const check = (ok, label, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}
     const settings = await session(cdp, setT);
     await settings.waitFor(`chrome.storage.sync.get('gemmaProfileVersion').then(v => v.gemmaProfileVersion === 2)`, 15000);
     await sleep(1000);  // let the first-run settings migration finish before overriding it
-    await settings.ev(`chrome.storage.sync.set(${JSON.stringify({ ...PRESET, endpoint: 'http://127.0.0.1:8001/v1/chat/completions', gemmaVllm: false, gemmaImageVerification: true, gemmaProfileVersion: 2 })}).then(() => true)`);
+    await settings.ev(`chrome.storage.sync.set(${JSON.stringify({ ...PRESET, endpoint: ENDPOINT, gemmaVllm: false, gemmaImageVerification: true, gemmaProfileVersion: 2 })}).then(() => true)`);
+    await settings.ev(`chrome.storage.local.set({ bridgeToken: ${JSON.stringify(TOKEN)} }).then(() => true)`);
 
     const { targetId: galT } = await cdp.send('Target.createTarget', { url: GALLERY });
     const gallery = await session(cdp, galT);

@@ -1,6 +1,12 @@
-"""Loopback OpenAI-compatible streaming adapter for Vertex. No third-party packages."""
+"""OpenAI-compatible streaming adapter for Vertex. No third-party packages.
+
+Local use (default): listens on 127.0.0.1 and accepts only loopback Host headers and Chrome-extension origins.
+Remote use (e.g. behind `tailscale serve`): add --allow-host for the public name and --token-file so every
+request must carry `Authorization: Bearer <token>`.
+"""
 import argparse
 import base64
+import hmac
 import json
 import re
 import shutil
@@ -20,10 +26,16 @@ MAX_BODY = 20 * 1024 * 1024
 
 
 class Credentials:
-    def __init__(self):
+    """Google access tokens from the gcloud CLI, cached for 50 minutes.
+
+    mode 'adc' uses application-default credentials (gcloud auth application-default login);
+    mode 'gcloud-user' uses the CLI's own signed-in account (gcloud auth login).
+    """
+    def __init__(self, mode='adc'):
         self.token = None
         self.expires = 0
         self.lock = threading.Lock()
+        self.command = ['auth', 'application-default', 'print-access-token'] if mode == 'adc' else ['auth', 'print-access-token']
 
     def get(self):
         with self.lock:
@@ -33,12 +45,13 @@ class Credentials:
             if not executable:
                 raise RuntimeError('gcloud is missing. Install Google Cloud CLI and run gcloud auth application-default login.')
             proc = subprocess.run(
-                [executable, 'auth', 'application-default', 'print-access-token'],
+                [executable, *self.command],
                 capture_output=True, text=True, timeout=40,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
             if proc.returncode or not proc.stdout.strip():
-                raise RuntimeError('Google ADC authentication failed. Run gcloud auth application-default login.')
+                raise RuntimeError('Google authentication failed. Run gcloud auth application-default login '
+                                   '(or gcloud auth login with --auth gcloud-user).')
             self.token = proc.stdout.strip()
             self.expires = time.monotonic() + 3000
             return self.token
@@ -120,6 +133,18 @@ def incomplete_message(block_reason, finish_reason):
     return f'Vertex returned no complete answer ({finish_reason}).'
 
 
+def host_permitted(host, port, extra_hosts):
+    return host in (f'127.0.0.1:{port}', f'localhost:{port}') or host in extra_hosts
+
+
+def token_ok(header, token):
+    """True when no token is configured, or the Authorization header carries it (constant-time compare)."""
+    if not token:
+        return True
+    scheme, _, value = (header or '').partition(' ')
+    return scheme.lower() == 'bearer' and hmac.compare_digest(value.strip().encode(), token.encode())
+
+
 def usage_openai(usage):
     prompt = usage.get('promptTokenCount', 0)
     thinking = usage.get('thoughtsTokenCount', 0)
@@ -139,8 +164,11 @@ class Handler(BaseHTTPRequestHandler):
     def permitted(self):
         origin = self.headers.get('Origin', '')
         host = self.headers.get('Host', '')
-        return host in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}') and (
+        return host_permitted(host, self.server.server_port, self.server.extra_hosts) and (
             not origin or re.fullmatch(r'chrome-extension://[a-p]{32}', origin) is not None)
+
+    def authorized(self):
+        return token_ok(self.headers.get('Authorization'), self.server.token)
 
     def headers_for(self, status, mime):
         self.send_response(status)
@@ -163,12 +191,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(403, {'error': 'Origin or host not allowed.'})
         self.headers_for(204, 'text/plain')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         self.end_headers()
 
     def do_GET(self):
         if not self.permitted():
             return self.reply(403, {'error': 'Origin or host not allowed.'})
+        if not self.authorized():
+            return self.reply(401, {'error': {'message': 'Missing or wrong bridge token.'}})
         if self.path == '/health':
             return self.reply(200, {'service': 'lm-translate-vertex', 'project': self.server.project, 'location': self.server.location})
         if self.path == '/v1/models':
@@ -178,6 +208,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.permitted():
             return self.reply(403, {'error': 'Origin or host not allowed.'})
+        if not self.authorized():
+            return self.reply(401, {'error': {'message': 'Missing or wrong bridge token.'}})
         if self.path != '/v1/chat/completions':
             return self.reply(404, {'error': 'Route not found.'})
         if self.headers.get_content_type() != 'application/json':
@@ -244,13 +276,25 @@ def main():
     parser.add_argument('--project', default='buoyant-program-477612-e3')
     parser.add_argument('--location', default='us')
     parser.add_argument('--port', type=int, default=8001)
+    parser.add_argument('--allow-host', action='append', default=[], metavar='HOST[:PORT]',
+                        help='extra Host header to accept, e.g. the tailscale serve name (repeatable)')
+    parser.add_argument('--token-file', help='require Authorization: Bearer <token>, read from this file')
+    parser.add_argument('--auth', choices=('adc', 'gcloud-user'), default='adc',
+                        help='Google credentials: application-default login (default) or the gcloud CLI account')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9-]+', args.project) or args.location not in ('us', 'eu', 'global'):
         parser.error('Use a valid project ID and us/eu/global location.')
     ThreadingHTTPServer.request_queue_size = 64  # the default backlog of 5 refuses parallel page requests
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     server.project, server.location = args.project, args.location
-    server.credentials = Credentials()
+    server.credentials = Credentials(args.auth)
+    server.extra_hosts = set(args.allow_host)
+    server.token = None
+    if args.token_file:
+        with open(args.token_file, encoding='utf-8') as f:
+            server.token = f.read().strip()
+        if len(server.token) < 16:
+            parser.error('The bridge token must be at least 16 characters.')
     print(f'Vertex bridge on 127.0.0.1:{args.port}; project={args.project}; location={args.location}', flush=True)
     server.serve_forever()
 

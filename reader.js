@@ -833,6 +833,7 @@ async function verifyPage(p, signal) {
 function friendlyError(message) {
   if (/Blocked by Google content policy|PROHIBITED_CONTENT|SAFETY/i.test(message)) return 'Blocked by the provider’s content policy';
   if (/Failed to fetch|NetworkError|ECONNREFUSED/i.test(message)) return 'Model server unreachable';
+  if (/HTTP 401/.test(message)) return 'The bridge rejected the token; set it in the LM Translate popup';
   if (/HTTP 429|Resource exhausted/i.test(message)) return 'Provider out of capacity (429) after 3 retries; try later, lower Parallel, or use a Flash preset';
   if (/HTTP 50[234]|UNAVAILABLE|timed out/i.test(message)) return 'Provider unavailable or timed out after 3 retries; try again later';
   if (/output limit/i.test(message)) return 'Output limit reached; the page has too much text for one call';
