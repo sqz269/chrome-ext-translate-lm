@@ -57,6 +57,7 @@ const S = {
 try {
   S.mode = localStorage.getItem('lmt-reader-mode') || 'typeset';
   S.script = localStorage.getItem('lmt-reader-script') === '1';
+  S.pinStatus = localStorage.getItem('lmt-reader-pin') === '1';
   S.sfxMode = localStorage.getItem('lmt-reader-sfx') || 'label';
   const w = localStorage.getItem('lmt-reader-width');
   if (w) $('width').value = w;
@@ -471,6 +472,8 @@ function renderRegions(p) {
       const node = h('button', { type: 'button', class: cls, 'aria-label': `Region ${i + 1}: ${text}`, lang: 'en', 'data-i': i }, h('span', { text }));
       if (style.fill) node.style.background = style.fill;
       node.addEventListener('click', (e) => { e.stopPropagation(); inspect(p, i, node); });
+      node.addEventListener('mouseenter', () => highlight(p, i, true));
+      node.addEventListener('mouseleave', () => highlight(p, i, false));
       const fit = style.cls === 'erase' ? p.layouts?.[i] : null;
       if (fit?.text) {
         // Cover the Japanese, then letter in the largest rectangle inside the balloon.
@@ -486,7 +489,8 @@ function renderRegions(p) {
       layer.append(node);
     } else {
       const node = h('button', { type: 'button', class: `region${r.placement ? ' pl-' + r.placement : ''}`, 'aria-label': `Region ${i + 1}${r.placement ? ' (' + r.placement + ')' : ''}: ${text}`, 'data-i': i, title: r.placement || null }, h('span', { class: 'num', text: String(i + 1) }));
-      node.addEventListener('mouseenter', (e) => tip(text, e.clientX, e.clientY));
+      node.addEventListener('mouseenter', (e) => { tip(text, e.clientX, e.clientY); highlight(p, i, true); });
+      node.addEventListener('mouseleave', () => highlight(p, i, false));
       node.addEventListener('mousemove', (e) => tip(null, e.clientX, e.clientY));
       node.addEventListener('mouseleave', () => { $('tip').hidden = true; });
       node.addEventListener('click', (e) => { e.stopPropagation(); $('tip').hidden = true; inspect(p, i, node); });
@@ -546,8 +550,16 @@ function renderScript(p) {
     const li = h('li', { tabindex: '0' }, h('span', { class: 'en', text: shownText(p, i) }), mark, h('span', { class: 'ja', lang: 'ja', text: r.verifiedSource || r.original }));
     li.addEventListener('click', (e) => { e.stopPropagation(); inspect(p, i, li); });
     li.addEventListener('keydown', (e) => { if (e.key === 'Enter') inspect(p, i, li); });
+    li.addEventListener('mouseenter', () => highlight(p, i, true));
+    li.addEventListener('mouseleave', () => highlight(p, i, false));
     ol.append(li);
   });
+}
+
+// A script line and its region on the page light up together.
+function highlight(p, i, on) {
+  p.el.layer.querySelector(`[data-i="${i}"]`)?.classList.toggle('hl', on);
+  p.el.script.children[i]?.classList.toggle('hl', on);
 }
 
 function rerenderAll() {
@@ -1017,7 +1029,31 @@ $('memory').onchange = () => { try { localStorage.setItem('lmt-reader-memory', $
 $('sfx').value = S.sfxMode;
 $('sfx').onchange = () => { S.sfxMode = $('sfx').value; try { localStorage.setItem('lmt-reader-sfx', S.sfxMode); } catch {} rerenderAll(); };
 $('script').checked = S.script;
-$('script').onchange = () => { S.script = $('script').checked; try { localStorage.setItem('lmt-reader-script', S.script ? '1' : '0'); } catch {} S.pages.forEach(renderScript); };
+const applyScript = () => {
+  document.body.classList.toggle('script-on', S.script);
+  S.pages.forEach(renderScript);
+  // The image column can change width on narrow windows; refit the lettering.
+  visible.forEach((p) => { p.fitWidth = 0; fitPage(p); });
+};
+$('script').onchange = () => { S.script = $('script').checked; try { localStorage.setItem('lmt-reader-script', S.script ? '1' : '0'); } catch {} applyScript(); };
+applyScript();
+
+// Sticky offsets: the controls (and, when pinned, the progress bar) stay at the top; the script column and
+// scroll targets sit below them.
+const stickyTop = () => {
+  const controls = document.querySelector('.controls').offsetHeight;
+  const status = document.querySelector('.status');
+  const top = controls + (S.pinStatus ? status.offsetHeight : 0);
+  document.documentElement.style.setProperty('--controls-h', `${controls}px`);
+  document.documentElement.style.setProperty('--sticky-top', `${top}px`);
+  document.documentElement.style.scrollPaddingTop = `${top + 8}px`;
+};
+new ResizeObserver(stickyTop).observe(document.querySelector('.controls'));
+new ResizeObserver(stickyTop).observe(document.querySelector('.status'));
+$('pin-status').checked = S.pinStatus;
+const applyPin = () => { document.querySelector('.status').classList.toggle('pinned', S.pinStatus); stickyTop(); };
+$('pin-status').onchange = () => { S.pinStatus = $('pin-status').checked; try { localStorage.setItem('lmt-reader-pin', S.pinStatus ? '1' : '0'); } catch {} applyPin(); };
+applyPin();
 $('width').onchange = () => {
   document.documentElement.style.setProperty('--page-width', `${$('width').value}px`);
   try { localStorage.setItem('lmt-reader-width', $('width').value); } catch {}

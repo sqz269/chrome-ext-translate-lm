@@ -123,7 +123,9 @@ The reader translates a whole e-hentai gallery in its own extension tab. Open it
     - **Older pages:** pages saved before placement existed use the pixel check alone.
   - **Boxes** shows numbered outlines, coloured by placement (blue bubble, green art, orange SFX, purple sign); hover to read.
   - **Original** hides the translation. Hold **Shift** to peek at the original art.
-  - **Width** and **Script** (the numbered translation list under each page) are view options.
+  - **Width** sets the page size.
+  - **Script** shows each page's numbered translations beside it, with the Japanese under each line. The list sticks while its page is on screen and scrolls on its own when long. Hovering a line highlights its region on the page, and the reverse. Narrow windows put the script under the page.
+  - **Pin progress** keeps the progress bar visible under the controls while you scroll.
 - **Click any region** to see the Japanese (detected and image-checked). Mark it **Good** or **Wrong**, or **Edit** it into a correction. Corrections replace the shown text, and feedback is tied to that translation of the page.
 - **Export** downloads JSON: gallery metadata, glossary, and each region's box, OCR, checked source, translation and your rating or correction. No image data.
 
