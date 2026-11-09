@@ -110,10 +110,18 @@ The reader translates a whole e-hentai gallery in its own extension tab. Open it
   - Pages translated earlier only reload their image and make no model calls. **Redo translated** translates them again.
   - Each page also has its own **Translate** / **Retranslate** button.
 - **View**
-  - **Text** sets English over the page.
-    - Lettered bubbles and captions are covered in their own background colour, sampled from the page in memory, and re-lettered at the largest size that fits without splitting words.
-    - Titles, coloured or outlined sound effects and regions larger than about 6% of the page get a label instead, so the art stays visible.
-  - **Boxes** shows numbered outlines; hover to read.
+  - **Text** sets English over the page. The translate step also returns each region's **placement**, and the lettering follows it:
+    - `bubble` (speech or thought balloon, caption box): the Japanese is covered in the balloon's own colour, sampled from the page in memory, and re-lettered at the largest size that fits without splitting words.
+      - **Balloon fitting** (`balloon.js`): the English uses the balloon's interior, not just the narrow column the Japanese occupied.
+      - **How it works:** one flood fill per page finds each balloon, and a balloon shared by two text boxes is split between them. Glyph strokes and symbols inside the balloon count as interior. The English goes in the largest rectangle that contains the text's centre, kept a margin away from the outline.
+      - **Fallbacks:** a fill that reaches the page edge, grows past 15% of the page, or isn't mostly bounded by a dark outline is treated as a leak, and that region keeps the old padded box. So does a balloon with no more room than the text box.
+      - **Eval pages:** 70% of bubble regions get a fitted balloon, with a median of 1.9× more room (over 4× for the top tenth) and about 5 ms per page.
+    - `art` (dialogue or asides drawn on the artwork with no balloon): dark text with a white outline over the art; nothing is erased.
+    - `sfx` (sound effects drawn as part of the art): a small semi-transparent label, with the original lettering still visible. The **SFX** setting switches this to outlined text or hides sound-effect translations.
+    - `sign` (signs, screens, labels): a small label.
+    - **Safety net:** a pixel check only allows erasing on a plain ground. A region called `bubble` that sits on busy art gets outlined text instead.
+    - **Older pages:** pages saved before placement existed use the pixel check alone.
+  - **Boxes** shows numbered outlines, coloured by placement (blue bubble, green art, orange SFX, purple sign); hover to read.
   - **Original** hides the translation. Hold **Shift** to peek at the original art.
   - **Width** and **Script** (the numbered translation list under each page) are view options.
 - **Click any region** to see the Japanese (detected and image-checked). Mark it **Good** or **Wrong**, or **Edit** it into a correction. Corrections replace the shown text, and feedback is tied to that translation of the page.
@@ -141,6 +149,7 @@ On the 10 eval-v2 pages where Flash translators wrote 彩葉 as "Ayaha", a re-ru
 - If the verify output fails validation, it is retried once, from the reader and the context menu alike. In eval-v2 this happened on 2 of 125 pages, and a replay fixed both.
 - A Google policy block shows on that page as "Blocked by the provider's content policy", and the run continues. The bridge now reports `promptFeedback.blockReason` and policy finish reasons, instead of "no complete answer".
 - The bridge's listen backlog is now 64 instead of 5, so parallel pages are not refused.
+- **After updating the extension's files**, press Reload on LM Translate in `chrome://extensions`. Chrome keeps running the old background script until then, while the popup and reader pages already load the new files. The reader checks for this mismatch, shows a message and disables Start. A request the background never acknowledges fails after 20 s instead of hanging on "Preparing image…".
 
 **New preset:** Gemini 4 Argon detect + 3.6 translate. It scored best for its speed in eval-v2: 95.5% vs 83.8% for 3.6 + 3.6, at about 27 s vs 8 s per page. Argon capacity varies by day. When Argon is busy, the reader's retries help, but a Flash preset is faster. A 3.6 + 3.6 run measured about 5–10 s per page, and roughly $0.003 per page at intro list prices, estimated from reported tokens.
 

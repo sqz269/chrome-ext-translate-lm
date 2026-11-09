@@ -1,6 +1,6 @@
 // Live end-to-end check of the batch reader (reader.html) in a throwaway headless Chrome profile.
 //
-//   node tests/reader-e2e.cjs --go [--gallery URL] [--pages 2-5] [--preset vertex36|vertexargonflash]
+//   node tests/reader-e2e.cjs --go [--gallery URL] [--pages 2-5] [--preset vertex36|vertexargonflash|vertexhybrid]
 //                               [--endpoint https://host:8443/v1/chat/completions]   (token in LMT_BRIDGE_TOKEN)
 //
 // Paid and online: it reads a real e-hentai gallery (anonymously, at the reader's normal pace) and translates
@@ -25,7 +25,8 @@ const GALLERY = opt('gallery', 'https://e-hentai.org/g/3872169/83c76e2306/');
 const [FROM, TO] = opt('pages', '2-5').split('-').map(Number);
 const PRESETS = {
   vertex36: { provider: 'vertex36', model: 'gemini-3.6-flash-minimal' },
-  vertexargonflash: { provider: 'vertexargonflash', model: 'gemini-4-argon-low' }
+  vertexargonflash: { provider: 'vertexargonflash', model: 'gemini-4-argon-low' },
+  vertexhybrid: { provider: 'vertexhybrid', model: 'gemini-3.6-flash-minimal' }
 };
 const PRESET = PRESETS[opt('preset', 'vertex36')];
 const ENDPOINT = opt('endpoint', 'http://127.0.0.1:8001/v1/chat/completions');
@@ -118,6 +119,15 @@ const check = (ok, label, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}
     check(translated.length > 0 && translated.every((q) => JSON.stringify(q.context) === JSON.stringify(expected(q.n))),
       'memory: each page used the previous translated pages as context', translated.map((q) => `p${q.n}←[${q.context}]`).join(' '));
     check(translated.every((q) => q.kinds.includes('detect') && q.kinds.includes('verify-image')), 'memory: detect and verify ran as separate requests');
+
+    // Placement: every translated region carries one, and Text mode letters by it.
+    const placed = await reader.ev(`(() => {
+      const regs = S.pages.slice(${FROM - 1}, ${TO}).flatMap(p => p.regions || []);
+      const counts = {}; for (const r of regs) counts[r.placement ?? 'none'] = (counts[r.placement ?? 'none'] || 0) + 1;
+      const classes = {}; for (const n of document.querySelectorAll('.tl')) { const c = [...n.classList].filter(x => ['erase', 'outline', 'label'].includes(x))[0] || 'none'; classes[c] = (classes[c] || 0) + 1; }
+      return { counts, classes, ok: regs.length > 0 && regs.every(r => ['bubble', 'art', 'sfx', 'sign'].includes(r.placement)) };
+    })()`);
+    check(placed.ok, 'placement: every translated region has one', `${JSON.stringify(placed.counts)} → ${JSON.stringify(placed.classes)}`);
 
     // Single-page retranslate with memory off, then on again.
     const last = translated[translated.length - 1]?.n;

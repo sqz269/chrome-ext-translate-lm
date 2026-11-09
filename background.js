@@ -255,6 +255,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 
 // ─── LM Studio API ────────────────────────────────────────────────────────────
+// Version of the reader <-> background messages. Chrome keeps running an unpacked extension's old background
+// script until the extension is reloaded, while pages load new files at once; the reader compares this number to
+// its own and refuses to start on a mismatch instead of waiting on requests the old script ignores.
+const READER_PROTOCOL = 3;
+
 // Presets that translate with a different model from the one that detects.
 const TRANSLATE_MODEL = {
   vertexhybrid: 'gemini-3.8-flash-low',
@@ -272,6 +277,7 @@ function describeConfig(cfg) {
     provider: cfg.provider, endpoint: cfg.endpoint, detect, translate,
     cloud: !!cfg.provider?.startsWith('vertex'), verify: usesImageVerification(cfg),
     targetLang: cfg.targetLang,
+    protocol: READER_PROTOCOL,
     label: detect === translate ? detect : `${detect} → ${translate}`
   };
 }
@@ -629,7 +635,8 @@ async function translateDetected(detected, cfg, dataUrl, opts = {}) {
     }
     return detected.map((d, i) => ({
       box: d.box_2d, original: labels[i],
-      verifiedSource: verified[i].source, translated: verified[i].translation
+      verifiedSource: verified[i].source, translated: verified[i].translation,
+      ...(verified[i].placement ? { placement: verified[i].placement } : {})
     }));
   }
   const translations = await attempt(() => translateBatch(labels, cfg, dataUrl, opts));
@@ -688,6 +695,20 @@ const VERIFY_SCHEMA = {
   }
 };
 
+// Where each region's text sits, so the reader can choose how to letter the translation. Opt-in
+// (opts.withPlacement): without it the verify request is unchanged, so the context menu and the eval harness
+// keep measuring the same prompt.
+const PLACEMENTS = ["bubble", "art", "sfx", "sign"];
+const PLACEMENT_PROMPT = " Also give placement for each id, describing where the Japanese text sits so a reader app can letter the translation: bubble = inside a speech or thought balloon, or a caption box with a plain fill; art = dialogue, narration or asides lettered directly on the artwork or page background with no balloon; sfx = sound effects or stylised lettering drawn as part of the art; sign = text that is part of the scene, such as signs, screens, labels, printed matter or UI.";
+const VERIFY_SCHEMA_PLACEMENT = (() => {
+  const s = JSON.parse(JSON.stringify(VERIFY_SCHEMA));
+  const item = s.json_schema.schema.properties.regions.items;
+  item.properties.placement = { type: "string", enum: PLACEMENTS };
+  item.required.push("placement");
+  s.json_schema.name = "checked_translations_placed";
+  return s;
+})();
+
 function validateVerifiedRegions(raw, count) {
   let regions;
   try { regions = JSON.parse(raw).regions; }
@@ -702,12 +723,16 @@ function validateVerifiedRegions(raw, count) {
 }
 
 async function verifyImageRegions(detected, cfg, dataUrl, opts = {}) {
-  const prompt = `Translate the supplied Japanese manga OCR regions into natural ${cfg.targetLang}. Return exactly one object per supplied id, preserving id, with source (your best supported Japanese reading) and translation. Preserve complete meaning, negation, questions, names, time span and speaker intent. Treat OCR as fallible. If an image is supplied, verify suspicious text against pixels and use visual context for sound effects, but do not invent obscured text or replace dialogue with scene descriptions. Without an image, do not guess new names or absent characters. Preserve uncertainty. Do not merge, omit or add region IDs. Coordinates are [ymin,xmin,ymax,xmax] in 0-1000. Return only the schema object.`;
+  const placed = !!opts.withPlacement;
+  const prompt = `Translate the supplied Japanese manga OCR regions into natural ${cfg.targetLang}. Return exactly one object per supplied id, preserving id, with source (your best supported Japanese reading) and translation. Preserve complete meaning, negation, questions, names, time span and speaker intent. Treat OCR as fallible. If an image is supplied, verify suspicious text against pixels and use visual context for sound effects, but do not invent obscured text or replace dialogue with scene descriptions. Without an image, do not guess new names or absent characters. Preserve uncertainty. Do not merge, omit or add region IDs. Coordinates are [ymin,xmin,ymax,xmax] in 0-1000.` + (placed ? PLACEMENT_PROMPT : "") + ` Return only the schema object.`;
   const raw = await callLM([{ role: "user", content: [
     { type: "image_url", image_url: { url: dataUrl } },
     { type: "text", text: prompt + contextBlock(opts.context) + "\nRegions: " + JSON.stringify(detected.map((r, i) => ({ id: i + 1, box_2d: r.box_2d, ocr: r.label }))) }
-  ] }], { kind: "verify-image", responseFormat: VERIFY_SCHEMA, onProgress: opts.onProgress, onStat: opts.onStat, signal: opts.signal });
-  return validateVerifiedRegions(raw, detected.length);
+  ] }], { kind: "verify-image", responseFormat: placed ? VERIFY_SCHEMA_PLACEMENT : VERIFY_SCHEMA, onProgress: opts.onProgress, onStat: opts.onStat, signal: opts.signal });
+  const regions = validateVerifiedRegions(raw, detected.length);
+  // A bad or missing placement never fails the page; the reader falls back to its pixel check.
+  if (placed) for (const r of regions) if (!PLACEMENTS.includes(r.placement)) r.placement = null;
+  return regions;
 }
 
 function extractJsonArray(text) {
@@ -1012,6 +1037,7 @@ chrome.runtime.onConnect?.addListener((port) => {
       const opts = {
         signal: job.signal,
         context: msg.context,
+        withPlacement: !!msg.placement,
         retryTransient: true,
         allowEmpty: true,
         onStage: () => send({ type: 'stage', stage: stageNames[++stage] }),

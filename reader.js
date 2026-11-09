@@ -7,6 +7,7 @@
 // Text: translations, the series glossary and per-region feedback are kept in this extension's IndexedDB.
 'use strict';
 
+const READER_PROTOCOL = 3;      // must match background.js; see the comment there
 const SITE_GAP_MS = 3000;          // minimum spacing between e-hentai HTML requests (one reader at human pace)
 const LISTING_GAP_MS = 1500;       // gallery listing pages, fetched once when the reader opens
 // Third-party reports of Google's list prices per 1M input/output tokens (intro), unverified with Google.
@@ -45,6 +46,7 @@ const S = {
   pages: [],            // PageState, index n-1
   config: null,
   mode: 'typeset',
+  sfxMode: 'label',     // how Text mode shows sound effects: label | outline | hide
   script: false,
   glossary: { scope: '', text: '', useTags: true },
   feedback: new Map(),  // "n/i" → feedback record
@@ -55,6 +57,7 @@ const S = {
 try {
   S.mode = localStorage.getItem('lmt-reader-mode') || 'typeset';
   S.script = localStorage.getItem('lmt-reader-script') === '1';
+  S.sfxMode = localStorage.getItem('lmt-reader-sfx') || 'label';
   const w = localStorage.getItem('lmt-reader-width');
   if (w) $('width').value = w;
 } catch { /* storage unavailable: defaults */ }
@@ -111,12 +114,20 @@ function bgRequest(msg, onEvent, signal) {
   return new Promise((resolve, reject) => {
     const id = `r${++seq}`;
     const p = bgPort();
-    const finish = (fn, value) => { pending.delete(id); signal?.removeEventListener('abort', onAbort); fn(value); };
+    let heard = false;
+    const finish = (fn, value) => { clearTimeout(watchdog); pending.delete(id); signal?.removeEventListener('abort', onAbort); fn(value); };
     const onAbort = () => {
       try { p.postMessage({ type: 'cancel', id }); } catch { /* port gone */ }
       finish(reject, new DOMException('Cancelled', 'AbortError'));
     };
+    // The background acknowledges every request immediately; silence means it is stale or broken.
+    const watchdog = setTimeout(() => {
+      if (heard) return;
+      try { p.postMessage({ type: 'cancel', id }); } catch { /* port gone */ }
+      finish(reject, new Error(STALE_MESSAGE));
+    }, 20000);
     pending.set(id, (m) => {
+      heard = true;
       if (m.type === 'result' || m.type === 'config') finish(resolve, m);
       else if (m.type === 'error') finish(reject, Object.assign(new Error(m.error), { usage: m.usage }));
       else onEvent?.(m);
@@ -127,9 +138,13 @@ function bgRequest(msg, onEvent, signal) {
   });
 }
 
+const STALE_MESSAGE = 'The extension’s background script is out of date with this page. Chrome keeps running the old one until the extension is reloaded: open chrome://extensions, press Reload on LM Translate, then reload this tab.';
+
 async function loadConfig() {
   const { config } = await bgRequest({ type: 'config' });
   S.config = config;
+  S.stale = config.protocol !== READER_PROTOCOL;
+  if (S.stale) { alertBox(STALE_MESSAGE, true); $('start').disabled = true; }
   $('model').textContent = `Model: ${config.label}`;
   const notes = [];
   if (config.cloud) notes.push('Paid Google Vertex via the local bridge; pages are sent to Google.');
@@ -238,7 +253,7 @@ async function open() {
   $('from').max = $('to').max = count;
   $('from').value = Math.min(S.source.page || 1, count);
   $('to').value = count;
-  $('start').disabled = false;
+  $('start').disabled = !!S.stale;
   $('export').disabled = false;
   refreshStatus();
   dbPut('books', { gid: S.gid, token: S.token, url: S.galleryUrl, title: S.meta.title, titleJp: S.meta.titleJp, tags: S.meta.tags, pageCount: count, opened: Date.now() }).catch(() => {});
@@ -350,7 +365,7 @@ function showImage(p) {
   img.addEventListener('load', () => {
     p.aspect = img.naturalHeight / img.naturalWidth;
     p.fitWidth = 0;
-    p.looks = null;
+    p.looks = p.layouts = null;
     renderRegions(p);
   }, { once: true });
   p.el.frame.replaceChildren(img, p.el.layer);
@@ -370,11 +385,11 @@ function typesetBox(box, aspect) {
   if (physH > w * 1.3) padX = Math.max(padX, Math.min(physH * 0.85 - w, w * 0.9) / 2);
   return [c(y0 - padY), c(x0 - padX), c(y1 + padY), c(x1 + padX)];
 }
-// A 400-px-wide copy of the page's pixels, used once per translation to see what lies under each region
-// and then dropped.
-function samplePixels(img) {
+// A reduced copy of the page's pixels (400 px wide for the region check, 640 for balloon fitting), used once
+// per translation and then dropped.
+function samplePixels(img, W = 400) {
   try {
-    const W = 400, H = Math.max(1, Math.round((W * img.naturalHeight) / img.naturalWidth));
+    const H = Math.max(1, Math.round((W * img.naturalHeight) / img.naturalWidth));
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
     const g = c.getContext('2d', { willReadFrequently: true });
@@ -383,13 +398,12 @@ function samplePixels(img) {
   } catch { return null; }
 }
 
-// Lettered speech bubbles and captions are dark text on a mostly light ground: cover them in that ground's
-// colour. Anything else (titles, coloured or outlined sound effects, text over art) gets a label instead,
-// so the art stays visible.
+// What lies under a region: `plain` when it is dark lettering on a mostly light, even ground (a balloon or a
+// caption box), with that ground's colour as `fill`; `big` when it covers more than ~6% of the page.
 function regionLook(px, box) {
-  // Bubble lettering rarely covers more than ~6% of a page; bigger regions are titles or art-scale text.
   const area = (box[2] - box[0]) * (box[3] - box[1]);
-  if (area > 60000 || !px) return { label: area > 60000, fill: null };
+  const big = area > 60000;
+  if (!px) return { plain: false, big, fill: null };
   const { W, H, data } = px;
   const xa = Math.max(0, Math.floor((box[1] / 1000) * W)), xb = Math.min(W, Math.ceil((box[3] / 1000) * W));
   const ya = Math.max(0, Math.floor((box[0] / 1000) * H)), yb = Math.min(H, Math.ceil((box[2] / 1000) * H));
@@ -403,12 +417,29 @@ function regionLook(px, box) {
       if (lum > 200) light.push([lum, i]); else if (lum < 150) dark++;
     }
   }
-  if (!n || light.length / n < 0.55 || dark / n < 0.02) return { label: true, fill: null };
+  if (!n || light.length / n < 0.55 || dark / n < 0.02) return { plain: false, big, fill: null };
   // Ground colour: the brighter half of the light pixels, which leaves out anti-aliased lettering edges.
   light.sort((a, b) => b[0] - a[0]);
   const top = light.slice(0, Math.max(1, light.length >> 1));
   const avg = (k) => Math.round(top.reduce((s, [, i]) => s + data[i + k], 0) / top.length);
-  return { label: false, fill: `rgb(${avg(0)}, ${avg(1)}, ${avg(2)})` };
+  return { plain: true, big, fill: `rgb(${avg(0)}, ${avg(1)}, ${avg(2)})` };
+}
+
+// How Text mode letters a region. The model's placement decides; the pixel check is a safety net so art is
+// never painted over: a "bubble" that isn't on a plain ground gets outlined text instead of an eraser.
+//   erase    cover the Japanese in the ground colour and letter on top (balloons, caption boxes)
+//   outline  dark text with a white outline straight over the art, nothing erased
+//   label    a small rounded label; the original stays visible around it
+// Pages saved before placement existed keep the pixel-only rule (plain and small: erase, otherwise label).
+function letterStyle(r, look) {
+  look ||= { plain: false, big: false, fill: null };
+  switch (r.placement) {
+    case 'bubble': return look.plain ? { cls: 'erase', fill: look.fill } : { cls: 'outline' };
+    case 'art': return { cls: 'outline' };
+    case 'sfx': return S.sfxMode === 'hide' ? null : { cls: S.sfxMode === 'outline' ? 'outline sfx' : 'label sfx' };
+    case 'sign': return { cls: 'label sign' };
+    default: return look.plain && !look.big ? { cls: 'erase', fill: look.fill } : { cls: 'label' };
+  }
 }
 const validBox = (b) => Array.isArray(b) && b.length === 4 && b.every(Number.isFinite) && b[2] > b[0] && b[3] > b[1];
 const place = (node, [y0, x0, y1, x1]) => Object.assign(node.style, { top: `${y0 / 10}%`, left: `${x0 / 10}%`, height: `${(y1 - y0) / 10}%`, width: `${(x1 - x0) / 10}%` });
@@ -423,20 +454,38 @@ function renderRegions(p) {
     const px = samplePixels(img);
     p.looks = p.regions.map((r) => (validBox(r.box) ? regionLook(px, r.box) : null));
   }
+  // Balloon fitting (balloon.js) for regions Text mode erases: English gets the balloon's interior.
+  if (S.mode === 'typeset' && !p.layouts && p.looks && img?.complete) {
+    const want = p.regions.map((r, i) => (validBox(r.box) && letterStyle(r, p.looks[i])?.cls === 'erase' ? r.box : null));
+    try { p.layouts = want.some(Boolean) ? Balloon.fit(samplePixels(img, 640), want) : []; }
+    catch { p.layouts = []; }
+  }
   p.regions.forEach((r, i) => {
     if (!validBox(r.box)) return;
     const text = shownText(p, i);
     const fb = S.feedback.get(fbKey(p, i));
     if (S.mode === 'typeset') {
-      const look = p.looks?.[i] || { label: false, fill: null };
-      const cls = `tl${look.label ? ' big' : ''}${fb?.correction ? ' edited' : fb?.rating === 'bad' ? ' flagged' : ''}`;
+      const style = letterStyle(r, p.looks?.[i]);
+      if (!style) return;   // sound effects hidden by the reader's SFX setting
+      const cls = `tl ${style.cls}${fb?.correction ? ' edited' : fb?.rating === 'bad' ? ' flagged' : ''}`;
       const node = h('button', { type: 'button', class: cls, 'aria-label': `Region ${i + 1}: ${text}`, lang: 'en', 'data-i': i }, h('span', { text }));
-      if (look.fill) node.style.background = look.fill;
+      if (style.fill) node.style.background = style.fill;
       node.addEventListener('click', (e) => { e.stopPropagation(); inspect(p, i, node); });
-      place(node, typesetBox(r.box, p.aspect));
+      const fit = style.cls === 'erase' ? p.layouts?.[i] : null;
+      if (fit?.text) {
+        // Cover the Japanese, then letter in the largest rectangle inside the balloon.
+        const eraser = h('div', { class: 'eraser' });
+        eraser.style.background = style.fill;
+        place(eraser, fit.erase);
+        layer.append(eraser);
+        node.classList.add('fitted');
+        place(node, fit.text);
+      } else {
+        place(node, typesetBox(r.box, p.aspect));
+      }
       layer.append(node);
     } else {
-      const node = h('button', { type: 'button', class: 'region', 'aria-label': `Region ${i + 1}: ${text}`, 'data-i': i }, h('span', { class: 'num', text: String(i + 1) }));
+      const node = h('button', { type: 'button', class: `region${r.placement ? ' pl-' + r.placement : ''}`, 'aria-label': `Region ${i + 1}${r.placement ? ' (' + r.placement + ')' : ''}: ${text}`, 'data-i': i, title: r.placement || null }, h('span', { class: 'num', text: String(i + 1) }));
       node.addEventListener('mouseenter', (e) => tip(text, e.clientX, e.clientY));
       node.addEventListener('mousemove', (e) => tip(null, e.clientX, e.clientY));
       node.addEventListener('mouseleave', () => { $('tip').hidden = true; });
@@ -458,8 +507,10 @@ function fitPage(p) {
   for (const node of p.el.layer.querySelectorAll('.tl')) {
     const span = node.firstChild;
     const fits = () => span.offsetHeight <= node.clientHeight - 4 && span.scrollWidth <= span.clientWidth + 1;
+    // Sound effects stay smaller so the drawn original remains the main thing on the page.
+    const cap = node.classList.contains('sfx') ? 20 : 30;
     const search = () => {
-      let lo = 6, hi = Math.min(30, Math.max(8, node.clientHeight));
+      let lo = 6, hi = Math.min(cap, Math.max(8, node.clientHeight));
       for (let k = 0; k < 7; k++) {
         const mid = (lo + hi) / 2;
         node.style.fontSize = `${mid}px`;
@@ -528,7 +579,8 @@ function inspect(p, i, anchor) {
   editing(false);
   const cfg = p.saved?.config?.label || '';
   const ctx = p.saved?.context?.length ? `Context: p${p.saved.context.join(', p')}.` : '';
-  $('ins-meta').textContent = [fb?.correction ? 'Showing your correction.' : '', cfg ? `Model: ${cfg}.` : '', ctx].filter(Boolean).join(' ');
+  const pl = r.placement ? `Placement: ${r.placement}.` : '';
+  $('ins-meta').textContent = [fb?.correction ? 'Showing your correction.' : '', pl, cfg ? `Model: ${cfg}.` : '', ctx].filter(Boolean).join(' ');
   const ins = $('inspector');
   ins.hidden = false;
   const a = anchor.getBoundingClientRect(), b = ins.getBoundingClientRect();
@@ -758,7 +810,7 @@ const mergeUsage = (a, b) => ({ prompt: (a?.prompt || 0) + (b?.prompt || 0), com
 
 async function savePage(p, regions, config, usage, ms, context) {
   p.regions = regions;
-  p.looks = null;
+  p.looks = p.layouts = null;
   p.saved = { key: `${S.gid}/${p.n}`, gid: S.gid, n: p.n, ptoken: p.entry.ptoken, regions, config, usage, ms, context, ts: Date.now() };
   await dbPut('pages', p.saved).catch(() => {});
   for (const k of [...S.feedback.keys()]) if (k.startsWith(`${p.n}/`)) S.feedback.delete(k);  // they were for the old text
@@ -782,7 +834,7 @@ async function translatePage(p, signal) {
     setState(p, 'encoding', 'Preparing image…');
     const dataUrl = await toJpegDataUrl(p.blob);
     setState(p, 'translating', 'Detecting…');
-    const res = await timed(p, () => bgRequest({ type: 'translate', dataUrl, context: bookContext() }, progressFor(p), signal));
+    const res = await timed(p, () => bgRequest({ type: 'translate', dataUrl, context: bookContext(), placement: true }, progressFor(p), signal));
     addUsage(res.usage);
     await savePage(p, res.regions, res.config, res.usage, res.ms, []);
   } catch (err) {
@@ -818,7 +870,7 @@ async function detectPage(p, signal) {
 async function verifyPage(p, signal) {
   const previous = memoryFor(p);
   try {
-    const res = await timed(p, () => bgRequest({ type: 'verify', dataUrl: p.dataUrl, detected: p.detected, context: { ...bookContext(), previous } }, progressFor(p, previous), signal));
+    const res = await timed(p, () => bgRequest({ type: 'verify', dataUrl: p.dataUrl, detected: p.detected, context: { ...bookContext(), previous }, placement: true }, progressFor(p, previous), signal));
     addUsage(res.usage);
     await savePage(p, res.regions, res.config, mergeUsage(p.pending?.usage, res.usage), (p.pending?.ms || 0) + res.ms, previous.map((x) => x.page));
   } catch (err) {
@@ -842,6 +894,7 @@ function friendlyError(message) {
 }
 
 async function single(p) {
+  if (S.stale) { alertBox(STALE_MESSAGE, true); return; }
   if (S.run) { status('Wait for the current run to finish, or cancel it, before retranslating a single page.'); return; }
   const ctl = new AbortController();
   S.run = { ctl, paused: false, total: 1, finished: 0, failed: 0, wake() {} };
@@ -873,7 +926,7 @@ function addUsage(u) {
 }
 
 function controls(running) {
-  $('start').disabled = running;
+  $('start').disabled = running || !!S.stale;
   $('pause').disabled = !running;
   $('cancel').disabled = !running;
   $('pause').textContent = 'Pause';
@@ -913,7 +966,7 @@ function exportJson() {
     context_pages: p.saved?.context || [],
     regions: p.regions.map((r, i) => {
       const fb = S.feedback.get(fbKey(p, i));
-      return { id: i + 1, box_2d: r.box, ocr: r.original, source: r.verifiedSource ?? r.original, translation: r.translated,
+      return { id: i + 1, box_2d: r.box, ocr: r.original, source: r.verifiedSource ?? r.original, translation: r.translated, placement: r.placement ?? null,
         ...(fb?.rating ? { rating: fb.rating } : {}), ...(fb?.correction ? { correction: fb.correction } : {}) };
     })
   }));
@@ -961,6 +1014,8 @@ $('cancel').onclick = () => S.run?.ctl.abort();
 $('export').onclick = exportJson;
 try { $('memory').checked = localStorage.getItem('lmt-reader-memory') !== '0'; } catch { /* default on */ }
 $('memory').onchange = () => { try { localStorage.setItem('lmt-reader-memory', $('memory').checked ? '1' : '0'); } catch {} };
+$('sfx').value = S.sfxMode;
+$('sfx').onchange = () => { S.sfxMode = $('sfx').value; try { localStorage.setItem('lmt-reader-sfx', S.sfxMode); } catch {} rerenderAll(); };
 $('script').checked = S.script;
 $('script').onchange = () => { S.script = $('script').checked; try { localStorage.setItem('lmt-reader-script', S.script ? '1' : '0'); } catch {} S.pages.forEach(renderScript); };
 $('width').onchange = () => {
