@@ -1,9 +1,15 @@
 {
   "manifest_version": 3,
   "name": "LM Translate",
-  "version": "0.1.0",
-  "description": "Translate selected text or images using a local LM Studio instance.",
-  "permissions": ["contextMenus", "scripting", "activeTab", "storage"],
+  "version": "0.6.0",
+  "description": "Translate text and images with local models or an optional Google Vertex bridge.",
+  "permissions": [
+    "contextMenus",
+    "scripting",
+    "activeTab",
+    "storage",
+    "declarativeNetRequestWithHostAccess"
+  ],
   "host_permissions": [
     "http://localhost:1234/*",
     "http://127.0.0.1:1234/*",
@@ -14,8 +20,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
     }

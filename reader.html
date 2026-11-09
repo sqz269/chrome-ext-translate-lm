@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Translated reader · LM Translate</title>
+  <link rel="stylesheet" href="reader.css">
+</head>
+<body>
+  <header class="top">
+    <div class="book">
+      <h1 id="title">Opening gallery…</h1>
+      <div id="title-jp" class="muted" lang="ja"></div>
+      <div id="meta" class="muted"></div>
+    </div>
+    <div class="model">
+      <span class="chip" id="model" title="Change the model preset in the LM Translate popup">Model: …</span>
+      <div id="model-note" class="muted small"></div>
+    </div>
+  </header>
+
+  <nav class="controls" aria-label="Reader controls">
+    <fieldset class="group">
+      <legend>Translate</legend>
+      <label>Pages <input id="from" type="number" min="1" value="1" inputmode="numeric"></label>
+      <label>to <input id="to" type="number" min="1" value="1" inputmode="numeric"></label>
+      <label title="Pages processed at the same time (with “Use previous pages”, pages are detected in parallel and translated in order). Page downloads stay one at a time.">Parallel
+        <select id="parallel"><option>1</option><option selected>2</option><option>3</option></select>
+      </label>
+      <label class="check" title="Translate pages again even if this browser already has a translation"><input id="redo" type="checkbox"> Redo translated</label>
+      <label class="check" title="Give each page the previous two translated pages' Japanese and English (text only) so names, terms and voices stay consistent. Pages are translated in order; downloads and detection still run ahead. About 4–5% more cost."><input id="memory" type="checkbox" checked> Use previous pages</label>
+      <button id="start" class="primary" disabled>Start</button>
+      <button id="pause" disabled>Pause</button>
+      <button id="cancel" disabled>Cancel</button>
+    </fieldset>
+    <fieldset class="group">
+      <legend>View</legend>
+      <div class="seg" role="radiogroup" aria-label="Display">
+        <button data-mode="typeset" role="radio">Text</button>
+        <button data-mode="boxes" role="radio">Boxes</button>
+        <button data-mode="original" role="radio">Original</button>
+      </div>
+      <label>Width
+        <select id="width"><option value="640">S</option><option value="900" selected>M</option><option value="1280">L</option></select>
+      </label>
+      <label class="check"><input id="script" type="checkbox"> Script</label>
+    </fieldset>
+    <fieldset class="group">
+      <legend>Book</legend>
+      <button id="glossary-open">Glossary</button>
+      <button id="export" disabled>Export</button>
+    </fieldset>
+  </nav>
+
+  <div class="status" role="status" aria-live="polite">
+    <div class="bar"><div id="bar-fill"></div></div>
+    <span id="status-text">Reading gallery…</span>
+    <span id="status-cost" class="muted"></span>
+  </div>
+  <div id="alert" class="alert" hidden></div>
+
+  <main id="pages" aria-label="Pages"></main>
+
+  <p class="foot muted small">Page images are held in this tab's memory only and are discarded when it closes. Translations, glossaries and feedback (text only) are kept in this browser. Hold <kbd>Shift</kbd> to peek at the original art.</p>
+
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+
+  <section id="inspector" class="inspector" hidden aria-label="Region details">
+    <header><strong id="ins-title">Region</strong><button id="ins-close" aria-label="Close">×</button></header>
+    <div id="ins-text" class="ins-text"></div>
+    <textarea id="ins-edit" rows="3" hidden aria-label="Corrected translation"></textarea>
+    <details><summary>Japanese</summary>
+      <div class="muted small">Detected</div><div id="ins-ocr" lang="ja"></div>
+      <div id="ins-checked-wrap"><div class="muted small">Checked against the image</div><div id="ins-checked" lang="ja"></div></div>
+    </details>
+    <div class="ins-actions">
+      <button id="ins-good" aria-pressed="false">Good</button>
+      <button id="ins-bad" aria-pressed="false">Wrong</button>
+      <button id="ins-editbtn">Edit</button>
+      <button id="ins-save" class="primary" hidden>Save</button>
+      <button id="ins-revert" hidden>Use model text</button>
+    </div>
+    <div id="ins-meta" class="muted small"></div>
+  </section>
+
+  <dialog id="glossary">
+    <form method="dialog">
+      <h2>Glossary</h2>
+      <p class="muted small" id="glossary-scope"></p>
+      <label for="glossary-text">One entry per line: <code>Japanese = English</code>. Lines starting with # are ignored.</label>
+      <textarea id="glossary-text" rows="10" placeholder="彩葉 = Iroha&#10;かぐや = Kaguya&#10;ヤチヨ = Yachiyo"></textarea>
+      <label class="check"><input id="use-tags" type="checkbox" checked> Also send the book title and its series/character tags as name hints</label>
+      <p class="muted small" id="tag-hints"></p>
+      <p class="muted small">Changes apply to pages translated after you save. Use “Redo translated” to apply them to finished pages.</p>
+      <div class="row"><button value="cancel">Cancel</button><button id="glossary-save" value="save" class="primary">Save</button></div>
+    </form>
+  </dialog>
+
+  <script src="ehentai.js"></script>
+  <script src="reader.js"></script>
+</body>
+</html>

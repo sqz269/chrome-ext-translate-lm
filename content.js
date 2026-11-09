@@ -95,15 +95,11 @@ function findImage(srcUrl) {
   );
 }
 
-function tryCanvas(img) {
-  // Image must be fully loaded with real dimensions.
-  if (!img.complete || !img.naturalWidth || !img.naturalHeight) return null;
-
+function canvasToJpeg(img) {
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
   canvas.getContext("2d").drawImage(img, 0, 0);
-
   try {
     // JPEG @ 0.92 — near-lossless, far smaller than PNG for photos.
     // Vision models don't need alpha for OCR.
@@ -112,6 +108,31 @@ function tryCanvas(img) {
     // SecurityError: cross-origin image without CORS headers tainted the canvas.
     return null;
   }
+}
+
+function tryCanvas(img) {
+  // Image must be fully loaded with real dimensions.
+  if (!img.complete || !img.naturalWidth || !img.naturalHeight) return null;
+  return canvasToJpeg(img);
+}
+
+// Re-issue the image load with crossOrigin="anonymous". If the server returns
+// CORS headers (most public CDNs do, even when the page didn't ask), we get an
+// untainted canvas. Browser HTTP cache usually serves the response without a
+// real network round-trip. Returns null if the server refuses CORS or the
+// load fails.
+async function tryCanvasReload(srcUrl) {
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.referrerPolicy = "no-referrer-when-downgrade";
+  img.src = srcUrl;
+  try {
+    await img.decode();
+  } catch {
+    return null;
+  }
+  if (!img.naturalWidth || !img.naturalHeight) return null;
+  return canvasToJpeg(img);
 }
 
 async function tryPageFetch(url) {
@@ -133,23 +154,145 @@ async function tryPageFetch(url) {
 }
 
 async function grabImageFromPage(srcUrl) {
+  const pageOrigin = location.origin;
   const img = findImage(srcUrl);
 
   if (img) {
     const viaCanvas = tryCanvas(img);
-    if (viaCanvas) return { ok: true, dataUrl: viaCanvas, method: "canvas" };
+    if (viaCanvas) {
+      return { ok: true, dataUrl: viaCanvas, method: "canvas", pageOrigin };
+    }
+  }
+
+  // Re-fetch with crossOrigin set. Often returns from HTTP cache when the
+  // server supports CORS — no real round-trip, untainted canvas.
+  const viaReload = await tryCanvasReload(srcUrl);
+  if (viaReload) {
+    return { ok: true, dataUrl: viaReload, method: "canvas-reload", pageOrigin };
   }
 
   const viaFetch = await tryPageFetch(srcUrl);
-  if (viaFetch) return { ok: true, dataUrl: viaFetch, method: "page-fetch" };
+  if (viaFetch) {
+    return { ok: true, dataUrl: viaFetch, method: "page-fetch", pageOrigin };
+  }
 
   return {
     ok: false,
+    pageOrigin,
     error: img
-      ? "Canvas tainted (cross-origin) and page fetch CORS-blocked."
+      ? "Canvas tainted, CORS reload refused, page fetch CORS-blocked."
       : "Image element not found in this frame."
   };
 }
+
+// ─── Preemptive CORS upgrade (opt-in) ────────────────────────────────────────
+// Tag cross-origin <img> elements with crossOrigin="anonymous" *before* the
+// browser sends the request, so the response carries Access-Control-Allow-*
+// headers and the resulting canvas is not tainted. Cost: any server that
+// doesn't return CORS headers will fail the upgraded load — we listen for
+// 'error' and reload without crossOrigin to recover.
+//
+// Bandwidth impact: on a CORS-supporting server, the first (page-initiated)
+// fetch is cancelled and replaced by our CORS fetch — net 1 request. On a
+// non-CORS server we issue the CORS fetch (fails), then re-fetch without
+// crossOrigin — net ~2 requests. That's why this is off by default.
+
+let preemptiveCorsObserver = null;
+
+function upgradeImg(img) {
+  const src = img.getAttribute("src");
+  if (!src) return;
+
+  // We've already handled this exact src (or we set it ourselves below).
+  if (img.dataset.lmtCorsSrc === src) return;
+
+  // Author-set crossOrigin — leave their CORS contract intact.
+  if (img.crossOrigin && !img.dataset.lmtCorsSrc) return;
+
+  // Already-clean schemes — canvas works without CORS.
+  if (/^(data|blob):/i.test(src)) return;
+
+  // Same-origin doesn't need CORS at all.
+  let url;
+  try { url = new URL(src, location.href); } catch { return; }
+  if (url.origin === location.origin) return;
+
+  img.dataset.lmtCorsSrc = src;
+  img.dataset.lmtCors = "pending";
+
+  const cleanup = () => {
+    img.removeEventListener("load", onLoad);
+    img.removeEventListener("error", onError);
+  };
+  const onLoad = () => {
+    cleanup();
+    if (img.dataset.lmtCors === "pending") img.dataset.lmtCors = "ok";
+  };
+  const onError = () => {
+    cleanup();
+    if (img.dataset.lmtCors !== "pending") return;
+    img.dataset.lmtCors = "reverted";
+    // Server refused CORS. Strip the attribute and re-fetch normally so the
+    // page's image still shows. The MutationObserver will fire on the
+    // attribute change but bail because lmtCorsSrc === src.
+    img.removeAttribute("crossorigin");
+    img.src = src;
+  };
+
+  img.addEventListener("load", onLoad);
+  img.addEventListener("error", onError);
+
+  img.crossOrigin = "anonymous";
+  img.src = src; // Re-issue with CORS. Cancels the page's in-flight fetch.
+}
+
+function startPreemptiveCors() {
+  if (preemptiveCorsObserver) return;
+
+  for (const img of document.images) upgradeImg(img);
+
+  preemptiveCorsObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.type === "childList") {
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (node.tagName === "IMG") {
+            upgradeImg(node);
+          } else if (node.querySelectorAll) {
+            node.querySelectorAll("img").forEach(upgradeImg);
+          }
+        }
+      } else if (
+        m.type === "attributes" &&
+        m.target.tagName === "IMG" &&
+        m.attributeName === "src"
+      ) {
+        upgradeImg(m.target);
+      }
+    }
+  });
+  preemptiveCorsObserver.observe(document.documentElement || document, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["src"]
+  });
+}
+
+chrome.storage.sync.get({ preemptiveCors: false }).then((cfg) => {
+  if (cfg.preemptiveCors) startPreemptiveCors();
+});
+
+// React to live setting changes without forcing a page reload to start
+// observing. (To *stop* still requires a reload, since we can't recover
+// pages where we already double-fetched.)
+const onStorageChange = (changes, area) => {
+  if (area !== "sync" || !changes.preemptiveCors) return;
+  if (changes.preemptiveCors.newValue && !preemptiveCorsObserver) {
+    startPreemptiveCors();
+  }
+};
+chrome.storage.onChanged.addListener(onStorageChange);
 
 // ─── Message handler ─────────────────────────────────────────────────────────
 const onMessage = (msg, _sender, sendResponse) => {
@@ -182,10 +325,41 @@ const onMessage = (msg, _sender, sendResponse) => {
 };
 chrome.runtime.onMessage.addListener(onMessage);
 
+// ─── e-hentai gallery pages: entry point for the translated reader ───────────
+// Adds one link to the gallery's action list (next to "Archive Download"). The reader runs in an extension
+// tab; nothing on this page changes otherwise.
+let readerLink = null;
+function addReaderLink() {
+  if (location.origin !== "https://e-hentai.org" || !/^\/g\/\d+\/[0-9a-f]{10}\/?$/.test(location.pathname)) return;
+  const list = document.getElementById("gd5");
+  if (!list || readerLink?.isConnected) return;
+  const a = document.createElement("a");
+  a.href = "#";
+  a.textContent = "Translated reader (LM Translate)";
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    chrome.runtime.sendMessage({ cmd: "lmt:openReader", url: location.href }).catch(() => {});
+  });
+  readerLink = document.createElement("p");
+  readerLink.className = "g2 gsp";
+  readerLink.append(a);
+  list.prepend(readerLink);
+}
+if (window === window.top) {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", addReaderLink, { once: true });
+  else addReaderLink();
+}
+
 // Register teardown so the next injection can cleanly replace this one.
 globalThis.__lmtTeardown = () => {
+  readerLink?.remove();
+  readerLink = null;
+  document.removeEventListener("DOMContentLoaded", addReaderLink);
   document.removeEventListener("contextmenu", onContextMenu, true);
   chrome.runtime.onMessage.removeListener(onMessage);
+  chrome.storage.onChanged.removeListener(onStorageChange);
+  preemptiveCorsObserver?.disconnect();
+  preemptiveCorsObserver = null;
 };
 
 console.debug("[LM Translate] content script loaded");

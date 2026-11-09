@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <style>
+    * { box-sizing: border-box; }
+    :focus-visible { outline: 2px solid #8bc8ff; outline-offset: 2px; }
+    button:disabled { opacity: .6; cursor: wait; }
     body {
       width: 380px;
       padding: 14px;
@@ -23,9 +26,12 @@
     .kind { display: inline-block; padding: 1px 5px; border-radius: 3px; background: #2d2d2d; font-size: 10px; }
     #clear-stats { width: auto; padding: 4px 10px; margin-top: 6px; font-size: 11px; background: #3a3a3a; }
     #clear-stats:hover { background: #4a4a4a; }
+    .dismiss-row { display: flex; gap: 6px; margin-top: 6px; }
+    .dismiss-row button { margin: 0; flex: 1; padding: 6px 8px; font-size: 11px; background: #3a3a3a; }
+    .dismiss-row button:hover { background: #4a4a4a; }
     h3 { margin: 0 0 12px; font-size: 14px; }
     label { display: block; margin: 10px 0 4px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       box-sizing: border-box;
       background: #2d2d2d;
@@ -56,6 +62,18 @@
 <body>
   <h3>LM Translate</h3>
 
+  <label for="provider">Model preset</label>
+  <select id="provider">
+    <option value="custom">Current / custom endpoint</option>
+    <option value="gemma">Local Gemma · verified translation</option>
+    <option value="vertex36">Gemini 3.6 Flash Minimal · Vertex</option>
+    <option value="vertex38">Gemini 3.8 Flash Low · Vertex</option>
+    <option value="vertexhybrid">Gemini 3.6 detect + 3.8 translate · Vertex</option>
+    <option value="vertexargonflash">Gemini 4 Argon detect + 3.6 translate · Vertex</option>
+    <option value="vertexargon">Gemini 4 Argon Low · Vertex</option>
+  </select>
+  <p id="provider-note" style="font-size:11px;color:#b5c4d7"></p>
+
   <label for="endpoint">Endpoint</label>
   <input id="endpoint" type="text">
 
@@ -71,6 +89,9 @@
   <label for="detectPrompt">Detection prompt (box overlay)</label>
   <textarea id="detectPrompt"></textarea>
 
+  <label class="check"><input type="checkbox" id="gemmaVllm"> Gemma vLLM: optimized detection (512 thinking tokens)</label>
+  <label class="check"><input type="checkbox" id="gemmaImageVerification"> Verify OCR against image during translation (Gemma / Vertex)</label>
+
   <label class="check">
     <input type="checkbox" id="imageInTranslatePass">
     Include image in translation pass (visual context, more tokens)
@@ -81,15 +102,27 @@
     Prefix-cache experiment: image-first, no system prompt (compare batch+pfx TTFT vs detect TTFT)
   </label>
 
+  <label class="check">
+    <input type="checkbox" id="preemptiveCors">
+    Preemptive CORS tagging (canvas-friendly; doubles image bandwidth on non-CORS servers — page reload required)
+  </label>
+
   <button id="save">Save</button>
-  <div id="status"></div>
+  <button id="test-connection">Test connection</button>
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <h4>Overlays</h4>
+  <div class="dismiss-row">
+    <button id="dismiss-result">Close result panel</button>
+    <button id="dismiss-boxes">Close box overlays</button>
+  </div>
 
   <h4>Diagnostics</h4>
   <div class="stats-summary" id="stats-summary">No calls yet.</div>
   <div class="stats-wrap">
     <table>
       <thead>
-        <tr><th>Kind</th><th>TTFT</th><th>Total</th><th>TBT</th><th>tok/s</th><th>P/C</th></tr>
+        <tr><th>Kind</th><th title="Time to first token, including thinking">TTFT</th><th>Total</th><th title="Estimated average time between output tokens">TBT</th><th title="Output tokens divided by total request time, including prefill">tok/s</th><th title="Prompt / completion tokens; completion includes thinking">P/C</th></tr>
       </thead>
       <tbody id="stats-body"></tbody>
     </table>
