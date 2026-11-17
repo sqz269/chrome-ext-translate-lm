@@ -21,6 +21,8 @@ MODELS = {
     'gemini-3.6-flash-minimal': ('gemini-3.6-flash', 'MINIMAL'),
     'gemini-3.8-flash-low': ('gemini-3.8-flash', 'LOW'),
     'gemini-4-argon-low': ('gemini-4-argon', 'LOW'),  # Argon has no MINIMAL level.
+    'gemini-4-carbon-low': ('gemini-4-carbon', 'LOW'),  # Carbon has no MINIMAL level either.
+    'gemini-4-hydrogen-low': ('gemini-4-hydrogen', 'LOW'),  # Nor does Hydrogen.
 }
 MAX_BODY = 20 * 1024 * 1024
 

@@ -11,7 +11,7 @@ const READER_PROTOCOL = 3;      // must match background.js; see the comment the
 const SITE_GAP_MS = 3000;          // minimum spacing between e-hentai HTML requests (one reader at human pace)
 const LISTING_GAP_MS = 1500;       // gallery listing pages, fetched once when the reader opens
 // Third-party reports of Google's list prices per 1M input/output tokens (intro), unverified with Google.
-const PRICES = { 'gemini-3.6-flash': [0.75, 3.75], 'gemini-3.8-flash': [0.75, 3.75], 'gemini-4-argon': [2, 10] };
+const PRICES = { 'gemini-3.6-flash': [0.75, 3.75], 'gemini-3.8-flash': [0.75, 3.75], 'gemini-4-argon': [2, 10], 'gemini-4-carbon': [2, 10] };
 
 const $ = (id) => document.getElementById(id);
 function h(tag, attrs = {}, ...children) {

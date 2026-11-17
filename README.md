@@ -93,6 +93,10 @@ Run `powershell -ExecutionPolicy Bypass -File .\Start-VertexBridge.ps1`, reload 
 - **Gemini 3.8 Flash Low**: cloud detection and translation using 3.8.
 - **Gemini 3.6 detect + 3.8 translate**: 3.6 grounding, then 3.8 image verification/translation; text translation also uses 3.8.
 - **Gemini 4 Argon Low**: cloud detection and translation using `gemini-4-argon` at thinking level LOW (Argon has no MINIMAL level).
+- **Gemini 4 Carbon detect + 3.6 translate**: `gemini-4-carbon` (LOW; it has no MINIMAL level either) finds and reads the text, 3.6 Flash translates. In eval-v2 it matched Argon detection (93.9% vs 92.2%, within noise) at about 14 s per page instead of 21 s, with far fewer capacity errors. One run; Carbon's price is unverified.
+- **Gemini 4 Carbon detect + Hydrogen translate**: Carbon finds and reads the text, `gemini-4-hydrogen` (LOW only) translates. In eval-v2 Hydrogen translated as well as the best models tested (94.6% on Argon detections, +2.3 over 3.6 Flash) and Carbon matched Argon as detector; the pair itself is untested there. The reader's cost estimate leaves Hydrogen out because its price is unknown here.
+- **Gemini 4 Hydrogen Low**: Hydrogen for both stages. Fine for selected text, but for images it places boxes poorly (79.4% as detector in eval-v2, below 3.6 Flash), so prefer the preset above.
+- **Gemini 4 Carbon Low**: Carbon for both stages. As a translator it scored level with the best models tested (94.5% on Argon detections); the two stages together are untested.
 
 Cloud mode sends selected text/images to Google and bills project `buoyant-program-477612-e3`. The bridge uses location `us`: the requested `us-central1` returned 404 for 3.8. Existing settings are retained until you select and save a preset. The Gemma server is independent and can remain running. Disable image verification only if you want the older direct-image/marker-batch flow.
 

@@ -263,7 +263,9 @@ const READER_PROTOCOL = 3;
 // Presets that translate with a different model from the one that detects.
 const TRANSLATE_MODEL = {
   vertexhybrid: 'gemini-3.8-flash-low',
-  vertexargonflash: 'gemini-3.6-flash-minimal'
+  vertexargonflash: 'gemini-3.6-flash-minimal',
+  vertexcarbonflash: 'gemini-3.6-flash-minimal',
+  vertexcarbonhydrogen: 'gemini-4-hydrogen-low'
 };
 
 function usesImageVerification(cfg) {

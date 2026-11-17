@@ -1,6 +1,6 @@
 // Live end-to-end check of the batch reader (reader.html) in a throwaway headless Chrome profile.
 //
-//   node tests/reader-e2e.cjs --go [--gallery URL] [--pages 2-5] [--preset vertex36|vertexargonflash|vertexhybrid]
+//   node tests/reader-e2e.cjs --go [--gallery URL] [--pages 2-5] [--preset vertex36|vertexargonflash|vertexcarbonflash|vertexcarbonhydrogen|vertexhybrid]
 //                               [--endpoint https://host:8443/v1/chat/completions]   (token in LMT_BRIDGE_TOKEN)
 //
 // Paid and online: it reads a real e-hentai gallery (anonymously, at the reader's normal pace) and translates
@@ -26,6 +26,8 @@ const [FROM, TO] = opt('pages', '2-5').split('-').map(Number);
 const PRESETS = {
   vertex36: { provider: 'vertex36', model: 'gemini-3.6-flash-minimal' },
   vertexargonflash: { provider: 'vertexargonflash', model: 'gemini-4-argon-low' },
+  vertexcarbonflash: { provider: 'vertexcarbonflash', model: 'gemini-4-carbon-low' },
+  vertexcarbonhydrogen: { provider: 'vertexcarbonhydrogen', model: 'gemini-4-carbon-low' },
   vertexhybrid: { provider: 'vertexhybrid', model: 'gemini-3.6-flash-minimal' }
 };
 const PRESET = PRESETS[opt('preset', 'vertex36')];

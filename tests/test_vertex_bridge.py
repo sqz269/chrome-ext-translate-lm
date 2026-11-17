@@ -34,6 +34,16 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(model, 'gemini-4-argon')
         self.assertEqual(payload['generationConfig']['thinkingConfig']['thinkingLevel'], 'LOW')
 
+    def test_carbon_alias_uses_low_thinking(self):
+        model, payload = bridge.build_request({'model': 'gemini-4-carbon-low', 'messages': [{'role': 'user', 'content': 'Hi'}]})
+        self.assertEqual(model, 'gemini-4-carbon')
+        self.assertEqual(payload['generationConfig']['thinkingConfig']['thinkingLevel'], 'LOW')
+
+    def test_hydrogen_alias_uses_low_thinking(self):
+        model, payload = bridge.build_request({'model': 'gemini-4-hydrogen-low', 'messages': [{'role': 'user', 'content': 'Hi'}]})
+        self.assertEqual(model, 'gemini-4-hydrogen')
+        self.assertEqual(payload['generationConfig']['thinkingConfig']['thinkingLevel'], 'LOW')
+
     def test_reject_remote_image_and_unknown_model(self):
         with self.assertRaises(ValueError):
             bridge.build_request({'model': 'unapproved'})

@@ -62,7 +62,7 @@ load();
 function updateProviderNote() {
   const vertex = document.getElementById('provider').value.startsWith('vertex');
   document.getElementById('provider-note').textContent = vertex
-    ? 'Paid Google Vertex API. Selected text and images are sent to Google through the local bridge. Start Start-VertexBridge.ps1 first. Project: buoyant-program-477612-e3 · location: us.' + (document.getElementById('provider').value === 'vertexhybrid' ? ' Model field controls detection; translation uses 3.8 Flash Low.' : document.getElementById('provider').value === 'vertexargonflash' ? ' Model field controls detection; translation uses 3.6 Flash Minimal. Best quality per second in eval-v2 (about 27 s per page).' : '')
+    ? 'Paid Google Vertex API. Selected text and images are sent to Google through the local bridge. Start Start-VertexBridge.ps1 first. Project: buoyant-program-477612-e3 · location: us.' + (document.getElementById('provider').value === 'vertexhybrid' ? ' Model field controls detection; translation uses 3.8 Flash Low.' : document.getElementById('provider').value === 'vertexargonflash' ? ' Model field controls detection; translation uses 3.6 Flash Minimal. Best quality per second in eval-v2 (about 27 s per page).' : document.getElementById('provider').value === 'vertexcarbonflash' ? ' Model field controls detection; translation uses 3.6 Flash Minimal. Matched Argon detection in eval-v2 at about 14 s per page.' : document.getElementById('provider').value === 'vertexcarbonhydrogen' ? ' Model field controls detection; translation uses Hydrogen Low. Each stage scored among the best in eval-v2; the pair is untested there.' : document.getElementById('provider').value === 'vertexhydrogen' ? ' Hydrogen places boxes poorly in eval-v2; for images prefer Carbon detect + Hydrogen translate.' : '')
     : 'Local/custom endpoint. Select a preset to fill connection settings, then Save.';
 }
 document.getElementById('provider').addEventListener('change', async event => {
@@ -72,7 +72,7 @@ document.getElementById('provider').addEventListener('change', async event => {
     // Vertex presets reuse this device's last bridge address (local or remote).
     const { vertexEndpoint } = await chrome.storage.local.get('vertexEndpoint');
     document.getElementById('endpoint').value = vertex ? (vertexEndpoint || LOCAL_BRIDGE) : DEFAULTS.endpoint;
-    document.getElementById('model').value = id === 'vertex36' || id === 'vertexhybrid' ? 'gemini-3.6-flash-minimal' : id === 'vertex38' ? 'gemini-3.8-flash-low' : id === 'vertexargon' || id === 'vertexargonflash' ? 'gemini-4-argon-low' : DEFAULTS.model;
+    document.getElementById('model').value = id === 'vertex36' || id === 'vertexhybrid' ? 'gemini-3.6-flash-minimal' : id === 'vertex38' ? 'gemini-3.8-flash-low' : id === 'vertexargon' || id === 'vertexargonflash' ? 'gemini-4-argon-low' : id === 'vertexcarbon' || id === 'vertexcarbonflash' || id === 'vertexcarbonhydrogen' ? 'gemini-4-carbon-low' : id === 'vertexhydrogen' ? 'gemini-4-hydrogen-low' : DEFAULTS.model;
     document.getElementById('gemmaVllm').checked = !vertex;
     document.getElementById('gemmaImageVerification').checked = true;
     document.getElementById('tryPrefixCache').checked = false;
